@@ -29,12 +29,15 @@ func (e *Editor) View() string {
 
 	// Main content area
 	var mainContent string
+	editorPanel := e.renderEditor()
+	minimapPanel := e.renderMinimap()
+	combinedEditor := lipgloss.JoinHorizontal(lipgloss.Top, editorPanel, minimapPanel)
+
 	if e.fileTreeVisible {
 		treePanel := e.renderFileTree()
-		editorPanel := e.renderEditor()
-		mainContent = lipgloss.JoinHorizontal(lipgloss.Top, treePanel, editorPanel)
+		mainContent = lipgloss.JoinHorizontal(lipgloss.Top, treePanel, combinedEditor)
 	} else {
-		mainContent = e.renderEditor()
+		mainContent = combinedEditor
 	}
 	sections = append(sections, mainContent)
 
@@ -68,6 +71,11 @@ func (e *Editor) View() string {
 		result = e.renderGlobalSearchOverlay(result)
 	case ViewUnsavedPrompt:
 		result = e.renderUnsavedPrompt(result)
+	}
+
+	// Render autocomplete if active
+	if len(e.suggestions) > 0 {
+		result = e.renderAutocompleteOverlay(result)
 	}
 
 	// Render diagnostic hint if cursor is on an error
@@ -143,31 +151,31 @@ func (e *Editor) renderTabBar() string {
 func getFileIcon(lang string) string {
 	switch lang {
 	case "go":
-		return "󰟓 "
+		return " "
 	case "python":
-		return "󰌠 "
+		return " "
 	case "javascript":
-		return "󰎦 "
+		return " "
 	case "typescript":
-		return "󰛦 "
+		return " "
 	case "rust":
-		return "󱘗 "
+		return " "
 	case "java":
-		return "󰬷 "
+		return " "
 	case "html":
-		return "󰌝 "
+		return " "
 	case "css", "scss":
-		return "󰌜 "
+		return " "
 	case "json":
-		return "󰘦 "
+		return " "
 	case "yaml":
-		return "󰘦 "
+		return " "
 	case "markdown":
-		return "󰍔 "
+		return " "
 	case "shell":
-		return "󱆃 "
+		return " "
 	default:
-		return "󰈔 "
+		return " "
 	}
 }
 
@@ -217,7 +225,20 @@ func (e *Editor) renderFileTree() string {
 		Border(lipgloss.NormalBorder(), false, true, false, false).
 		BorderForeground(t.Border)
 
-	content := e.fileTree.Render(treeHeight - 1)
+	header := ""
+	headerHeight := 0
+	if e.mode == ViewFileTreeFilter || e.fileTree.Filter != "" {
+		filterStyle := lipgloss.NewStyle().
+			Background(t.SidebarBg).
+			Foreground(t.Accent).
+			PaddingLeft(1).
+			PaddingTop(1).
+			Bold(true)
+		header = filterStyle.Render(" / " + e.fileTreeFilterInput.View())
+		headerHeight = 2
+	}
+
+	content := e.fileTree.Render(treeHeight - 1 - headerHeight)
 
 	// Add footer hint
 	hintStyle := lipgloss.NewStyle().
@@ -228,17 +249,34 @@ func (e *Editor) renderFileTree() string {
 		PaddingTop(0).
 		Width(treeWidth)
 
-	footer := hintStyle.Render("G/↑↓ Enter")
+	footer := hintStyle.Render("G/↑↓ Enter /:Filter")
 
-	return style.Render(lipgloss.JoinVertical(lipgloss.Left, content, footer))
+	return style.Render(lipgloss.JoinVertical(lipgloss.Left, header, content, footer))
 }
 
 func (e *Editor) renderEditor() string {
+	if e.splitActive {
+		w := e.editorWidth() / 2
+		// Vertical separator
+		sep := lipgloss.NewStyle().
+			Foreground(theme.CurrentTheme.Border).
+			Height(e.editorHeight()).
+			Width(1).
+			Render("│")
+		return lipgloss.JoinHorizontal(lipgloss.Top, e.renderPanel(e.activeTab, w), sep, e.renderPanel(e.rightTab, w-1))
+	}
+	return e.renderPanel(e.activeTab, e.editorWidth())
+}
+
+func (e *Editor) renderPanel(tabIdx int, width int) string {
 	t := theme.CurrentTheme
-	tab := e.currentTab()
+	if tabIdx < 0 || tabIdx >= len(e.tabs) {
+		return lipgloss.NewStyle().Width(width).Height(e.editorHeight()).Render(" No tab ")
+	}
+	tab := &e.tabs[tabIdx]
 	buf := tab.Buf
 
-	editorWidth := e.editorWidth()
+	editorWidth := width
 	editorHeight := e.editorHeight()
 
 	e.lineNumberWidth = len(fmt.Sprintf("%d", buf.LineCount())) + 1
@@ -254,6 +292,12 @@ func (e *Editor) renderEditor() string {
 		endLine = buf.LineCount()
 	}
 
+	// Phase 13: Find matching bracket
+	matchL, matchC := -1, -1
+	if tab.CursorLine >= 0 && tab.CursorLine < buf.LineCount() {
+		matchL, matchC = buf.FindMatchingBracket(tab.CursorLine, tab.CursorCol)
+	}
+
 	inBlockComment := false
 	if startLine > 0 {
 		for i := 0; i < startLine; i++ {
@@ -267,7 +311,17 @@ func (e *Editor) renderEditor() string {
 		isCursorLine = lineNum == tab.CursorLine
 
 		lineBg := t.Bg
-		if isCursorLine {
+		// Highlight cursor line only in active panel
+		isActive := false
+		if !e.splitActive {
+			isActive = true
+		} else if e.activePanel == 0 && tabIdx == e.activeTab {
+			isActive = true
+		} else if e.activePanel == 1 && tabIdx == e.rightTab {
+			isActive = true
+		}
+
+		if isCursorLine && isActive {
 			lineBg = t.CursorLine
 		}
 		baseStyle := lipgloss.NewStyle().Background(lineBg)
@@ -277,7 +331,7 @@ func (e *Editor) renderEditor() string {
 		lineNumStr = fmt.Sprintf("%*d ", e.lineNumberWidth-1, lineNum+1)
 
 		var lineNumStyle lipgloss.Style
-		if isCursorLine {
+		if isCursorLine && isActive {
 			lineNumStyle = baseStyle.Copy().
 				Foreground(t.LineNumActive).
 				Bold(true).
@@ -289,6 +343,24 @@ func (e *Editor) renderEditor() string {
 		}
 
 		sb.WriteString(lineNumStyle.Render(lineNumStr))
+
+		// Phase 16: Git gutter
+		marker := " "
+		if diffs, ok := e.fileDiffs[buf.FilePath]; ok {
+			if m, exists := diffs[lineNum]; exists {
+				marker = m
+			}
+		}
+		markerStyle := baseStyle.Copy()
+		switch marker {
+		case "+":
+			markerStyle = markerStyle.Foreground(lipgloss.Color("#00ff00"))
+		case "~":
+			markerStyle = markerStyle.Foreground(lipgloss.Color("#ffff00"))
+		case "-":
+			markerStyle = markerStyle.Foreground(lipgloss.Color("#ff0000"))
+		}
+		sb.WriteString(markerStyle.Render(marker))
 
 		// Gutter separator
 		absPath, _ := filepath.Abs(buf.FilePath)
@@ -304,7 +376,7 @@ func (e *Editor) renderEditor() string {
 
 		if hasDiag {
 			sb.WriteString(baseStyle.Copy().Foreground(lipgloss.Color("#ff0000")).Render("⊗"))
-		} else if isCursorLine {
+		} else if isCursorLine && isActive {
 			sb.WriteString(baseStyle.Copy().Foreground(t.Accent).Render("│"))
 		} else {
 			sb.WriteString(baseStyle.Copy().Foreground(t.Border).Render("│"))
@@ -413,13 +485,19 @@ func (e *Editor) renderEditor() string {
 					style = style.Foreground(lipgloss.Color("#ff0000")).Underline(true)
 				}
 
-				// Cursor
-				if lineNum == tab.CursorLine && colIdx+scrollCol == tab.CursorCol {
+				// Cursor or Matching Bracket
+				if isActive && lineNum == tab.CursorLine && colIdx+scrollCol == tab.CursorCol {
 					cursorStyle := lipgloss.NewStyle().
 						Background(t.Cursor).
 						Foreground(t.Bg).
 						Bold(true)
 					sb.WriteString(cursorStyle.Render(string(r)))
+				} else if isActive && lineNum == matchL && colIdx+scrollCol == matchC {
+					bracketStyle := lipgloss.NewStyle().
+						Background(t.Accent).
+						Foreground(t.Bg).
+						Bold(true)
+					sb.WriteString(bracketStyle.Render(string(r)))
 				} else {
 					sb.WriteString(baseStyle.Copy().Inherit(style).Render(string(r)))
 				}
@@ -428,7 +506,7 @@ func (e *Editor) renderEditor() string {
 		}
 
 		// Cursor at end of line
-		if lineNum == tab.CursorLine && tab.CursorCol >= len(runes) && len(runes) >= scrollCol && len(runes) < endCol {
+		if isActive && lineNum == tab.CursorLine && tab.CursorCol >= len(runes) && len(runes) >= scrollCol && len(runes) < endCol {
 			cursorStyle := lipgloss.NewStyle().
 				Background(t.Cursor).
 				Foreground(t.Bg).
@@ -454,8 +532,6 @@ func (e *Editor) renderEditor() string {
 		sb.WriteString(lipgloss.NewStyle().Background(t.Bg).Render(strings.Repeat(" ", editorWidth-e.lineNumberWidth-1)))
 		sb.WriteString("\n")
 	}
-
-	_ = isCursorLine
 
 	editorStyle := lipgloss.NewStyle().
 		Background(t.Bg).
@@ -525,7 +601,7 @@ func (e *Editor) renderStatusBar() string {
 
 	// Add Git branch
 	if e.gitBranch != "" {
-		leftParts += "   " + e.gitBranch
+		leftParts += "   " + e.gitBranch
 	}
 
 	leftStyle := lipgloss.NewStyle().
@@ -1816,4 +1892,81 @@ func (e *Editor) renderDiagnosticHint(bg string, diag *lsp.Diagnostic) string {
 	}
 
 	return placeOverlay(x, y, overlay, bg)
+}
+
+func (e *Editor) renderAutocompleteOverlay(bg string) string {
+	t := theme.CurrentTheme
+	tab := e.currentTab()
+
+	var sb strings.Builder
+	for i, s := range e.suggestions {
+		style := lipgloss.NewStyle().Background(t.TitleBar).Foreground(t.Fg).Padding(0, 1).Width(20)
+		if i == e.suggestionIdx {
+			style = style.Background(t.Accent).Foreground(t.Bg).Bold(true)
+		}
+		sb.WriteString(style.Render(s))
+		if i < len(e.suggestions)-1 {
+			sb.WriteString("\n")
+		}
+	}
+
+	overlay := lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder()).
+		BorderForeground(t.Accent).
+		Background(t.TitleBar).
+		Render(sb.String())
+
+	// Calculate cursor position
+	x := e.lineNumberWidth + 2 + tab.CursorCol - tab.ScrollCol
+	if e.fileTreeVisible {
+		x += e.fileTree.Width
+	}
+	y := tab.CursorLine - tab.ScrollLine + 2 // +1 for tab bar, +1 for offset
+
+	return placeOverlay(x, y, overlay, bg)
+}
+
+func (e *Editor) renderMinimap() string {
+	t := theme.CurrentTheme
+	tab := e.currentTab()
+	buf := tab.Buf
+
+	height := e.editorHeight()
+	width := 4
+
+	var sb strings.Builder
+	for i := 0; i < height; i++ {
+		lineIdx := int(float64(i) / float64(height) * float64(buf.LineCount()))
+		if lineIdx >= buf.LineCount() {
+			lineIdx = buf.LineCount() - 1
+		}
+
+		line := buf.GetLine(lineIdx)
+		dots := " "
+		if len(line) > 0 {
+			dots = "░"
+			if len(line) > 30 {
+				dots = "▒"
+			}
+			if len(line) > 60 {
+				dots = "▓"
+			}
+		}
+
+		style := lipgloss.NewStyle().Foreground(t.Comment)
+		if lineIdx >= tab.ScrollLine && lineIdx < tab.ScrollLine+height {
+			style = style.Foreground(t.Accent)
+		}
+		sb.WriteString(style.Render(dots))
+		if i < height-1 {
+			sb.WriteString("\n")
+		}
+	}
+
+	return lipgloss.NewStyle().
+		Width(width).
+		Height(height).
+		Border(lipgloss.NormalBorder(), false, false, false, true).
+		BorderForeground(t.Border).
+		Render(sb.String())
 }

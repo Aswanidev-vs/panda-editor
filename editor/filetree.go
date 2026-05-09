@@ -1,6 +1,8 @@
 package editor
 
 import (
+	"bufio"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -21,12 +23,84 @@ type FileNode struct {
 }
 
 type FileTree struct {
-	Root     FileNode
-	Width    int
-	Cursor   int
-	Scroll   int
-	Flat     []FileNode
+	Root            FileNode
+	Width           int
+	Cursor          int
+	Scroll          int
+	Flat            []FileNode
+	gitignoreRules  []gitignoreRule
+	showIgnored     bool
+	ShowTokens      bool
+	Filter          string
 }
+
+// ---------- Gitignore support (Phase 6) ----------
+
+type gitignoreRule struct {
+	pattern  string
+	negate   bool
+	dirOnly  bool
+}
+
+// parseGitignore reads a .gitignore file and returns parsed rules.
+func parseGitignore(root string) []gitignoreRule {
+	path := filepath.Join(root, ".gitignore")
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	var rules []gitignoreRule
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		rule := gitignoreRule{}
+
+		if strings.HasPrefix(line, "!") {
+			rule.negate = true
+			line = line[1:]
+		}
+
+		if strings.HasSuffix(line, "/") {
+			rule.dirOnly = true
+			line = strings.TrimSuffix(line, "/")
+		}
+
+		rule.pattern = line
+		rules = append(rules, rule)
+	}
+	return rules
+}
+
+// isGitignored checks whether a file/dir name matches any gitignore rule.
+func isGitignored(name string, isDir bool, rules []gitignoreRule) bool {
+	ignored := false
+	for _, rule := range rules {
+		if rule.dirOnly && !isDir {
+			continue
+		}
+		matched, _ := filepath.Match(rule.pattern, name)
+		if !matched {
+			// Also try matching as a path component (e.g., "*.exe" against "foo.exe")
+			matched, _ = filepath.Match(rule.pattern, filepath.Base(name))
+		}
+		if matched {
+			if rule.negate {
+				ignored = false
+			} else {
+				ignored = true
+			}
+		}
+	}
+	return ignored
+}
+
+// ---------- File type icons ----------
 
 // File type icon mapping for a richer sidebar look
 func fileIcon(name string, isDir bool) string {
@@ -58,21 +132,25 @@ var ignoredDirs = map[string]bool{
 	"target":       true,
 }
 
+// ---------- Tree construction ----------
+
 func NewFileTree(root string) FileTree {
-	rootNode := buildTree(root, 0, 3)
+	rules := parseGitignore(root)
+	rootNode := buildTreeWithRules(root, 0, 3, rules)
 	rootNode.Expanded = true
 
 	ft := FileTree{
-		Root:   rootNode,
-		Width:  28,
-		Cursor: 0,
-		Scroll: 0,
+		Root:           rootNode,
+		Width:          28,
+		Cursor:         0,
+		Scroll:         0,
+		gitignoreRules: rules,
 	}
 	ft.Flatten()
 	return ft
 }
 
-func buildTree(dir string, depth, maxDepth int) FileNode {
+func buildTreeWithRules(dir string, depth, maxDepth int, rules []gitignoreRule) FileNode {
 	node := FileNode{
 		Name:     filepath.Base(dir),
 		Path:     dir,
@@ -101,25 +179,27 @@ func buildTree(dir string, depth, maxDepth int) FileNode {
 	for _, entry := range entries {
 		name := entry.Name()
 
-		// Skip hidden files and ignored directories
+		// Always skip hardcoded ignored dirs
+		if ignoredDirs[name] {
+			continue
+		}
+
+		// Skip hidden files/dirs (except .gitignore, .env)
 		if strings.HasPrefix(name, ".") && name != ".gitignore" && name != ".env" {
-			if ignoredDirs[name] {
-				continue
-			}
-			// Still skip most hidden dirs
 			if entry.IsDir() {
 				continue
 			}
 		}
 
-		if ignoredDirs[name] {
+		// Phase 6: Check gitignore rules
+		if isGitignored(name, entry.IsDir(), rules) {
 			continue
 		}
 
 		fullPath := filepath.Join(dir, name)
 
 		if entry.IsDir() {
-			child := buildTree(fullPath, depth+1, maxDepth)
+			child := buildTreeWithRules(fullPath, depth+1, maxDepth, rules)
 			node.Children = append(node.Children, child)
 		} else {
 			node.Children = append(node.Children, FileNode{
@@ -134,18 +214,27 @@ func buildTree(dir string, depth, maxDepth int) FileNode {
 	return node
 }
 
+// buildTree is kept for backward compat (lazy loading uses rules from tree)
+func buildTree(dir string, depth, maxDepth int) FileNode {
+	return buildTreeWithRules(dir, depth, maxDepth, nil)
+}
+
+// ---------- Flatten ----------
+
 func (ft *FileTree) Flatten() {
 	ft.Flat = nil
-	ft.flattenNode(&ft.Root)
+	if ft.Filter != "" {
+		ft.flattenFiltered(&ft.Root)
+	} else {
+		ft.flattenNode(&ft.Root)
+	}
 }
 
 func (ft *FileTree) flattenNode(node *FileNode) {
 	if node.IsDir && node.Depth == 0 {
 		// Root node: don't add it, just its children
-		if node.Expanded {
-			for i := range node.Children {
-				ft.flattenNode(&node.Children[i])
-			}
+		for i := range node.Children {
+			ft.flattenNode(&node.Children[i])
 		}
 		return
 	}
@@ -157,6 +246,19 @@ func (ft *FileTree) flattenNode(node *FileNode) {
 		}
 	}
 }
+
+func (ft *FileTree) flattenFiltered(node *FileNode) {
+	if !node.IsDir {
+		if strings.Contains(strings.ToLower(node.Name), strings.ToLower(ft.Filter)) {
+			ft.Flat = append(ft.Flat, *node)
+		}
+	}
+	for i := range node.Children {
+		ft.flattenFiltered(&node.Children[i])
+	}
+}
+
+// ---------- Toggle expand/collapse ----------
 
 func (ft *FileTree) Toggle(idx int) {
 	if idx < 0 || idx >= len(ft.Flat) {
@@ -175,8 +277,8 @@ func (ft *FileTree) toggleInTree(node *FileNode, path string) bool {
 	if node.Path == path {
 		node.Expanded = !node.Expanded
 		if node.Expanded && len(node.Children) == 0 {
-			// Lazy-load children
-			*node = buildTree(path, node.Depth, node.Depth+3)
+			// Lazy-load children using gitignore rules
+			*node = buildTreeWithRules(path, node.Depth, node.Depth+3, ft.gitignoreRules)
 			node.Expanded = true
 		}
 		return true
@@ -189,6 +291,8 @@ func (ft *FileTree) toggleInTree(node *FileNode, path string) bool {
 	return false
 }
 
+// ---------- Selection (Phase 7: recursive directory selection) ----------
+
 func (ft *FileTree) ToggleSelect(idx int) {
 	if idx < 0 || idx >= len(ft.Flat) {
 		return
@@ -200,7 +304,12 @@ func (ft *FileTree) ToggleSelect(idx int) {
 
 func (ft *FileTree) toggleSelectInTree(node *FileNode, path string) bool {
 	if node.Path == path {
-		node.Selected = !node.Selected
+		newState := !node.Selected
+		node.Selected = newState
+		// Phase 7: If it's a directory, recursively select/deselect all children
+		if node.IsDir {
+			setSelectRecursive(node, newState)
+		}
 		return true
 	}
 	for i := range node.Children {
@@ -210,6 +319,18 @@ func (ft *FileTree) toggleSelectInTree(node *FileNode, path string) bool {
 	}
 	return false
 }
+
+// setSelectRecursive sets the Selected state on all children of a node.
+func setSelectRecursive(node *FileNode, state bool) {
+	for i := range node.Children {
+		node.Children[i].Selected = state
+		if node.Children[i].IsDir {
+			setSelectRecursive(&node.Children[i], state)
+		}
+	}
+}
+
+// ---------- Query helpers ----------
 
 func (ft *FileTree) SelectedPath() string {
 	if ft.Cursor < 0 || ft.Cursor >= len(ft.Flat) {
@@ -249,6 +370,8 @@ func (ft *FileTree) AdjustScroll(visibleHeight int) {
 		ft.Scroll = 0
 	}
 }
+
+// ---------- Render ----------
 
 func (ft *FileTree) Render(visibleHeight int) string {
 	t := theme.CurrentTheme
@@ -329,7 +452,21 @@ func (ft *FileTree) Render(visibleHeight int) string {
 			displayName = displayName[:maxNameLen-1] + "…"
 		}
 
-		line := indent + checkbox + icon + " " + displayName
+		// Phase 9: Per-file token display
+		tokenSuffix := ""
+		if ft.ShowTokens && !node.IsDir {
+			info, err := os.Stat(node.Path)
+			if err == nil {
+				tokens := int(info.Size()) / 4
+				if tokens > 1000 {
+					tokenSuffix = fmt.Sprintf(" ~%dk", tokens/1000)
+				} else {
+					tokenSuffix = fmt.Sprintf(" ~%dt", tokens)
+				}
+			}
+		}
+
+		line := indent + checkbox + icon + " " + displayName + tokenSuffix
 
 		var style lipgloss.Style
 		if isSelected {
@@ -377,17 +514,58 @@ func (ft *FileTree) Render(visibleHeight int) string {
 	return sb.String()
 }
 
-func (ft *FileTree) GetSelectedPaths() []string {
-	var paths []string
-	var walk func(node *FileNode)
-	walk = func(node *FileNode) {
-		if node.Selected {
-			paths = append(paths, node.Path)
-		}
-		for i := range node.Children {
-			walk(&node.Children[i])
+
+// ---------- Phase 10: Expand/Collapse All ----------
+
+func (ft *FileTree) ToggleExpandAll() {
+	// Check if most dirs are expanded or collapsed
+	expanded := 0
+	collapsed := 0
+	ft.countExpandState(&ft.Root, &expanded, &collapsed)
+
+	newState := expanded <= collapsed // if more collapsed, expand all; else collapse
+	ft.setExpandRecursive(&ft.Root, newState)
+	ft.Flatten()
+}
+
+func (ft *FileTree) countExpandState(node *FileNode, expanded, collapsed *int) {
+	if node.IsDir && node.Depth > 0 {
+		if node.Expanded {
+			*expanded++
+		} else {
+			*collapsed++
 		}
 	}
-	walk(&ft.Root)
+	for i := range node.Children {
+		ft.countExpandState(&node.Children[i], expanded, collapsed)
+	}
+}
+
+func (ft *FileTree) setExpandRecursive(node *FileNode, state bool) {
+	if node.IsDir {
+		node.Expanded = state
+		if state && len(node.Children) == 0 {
+			// Lazy-load children
+			*node = buildTreeWithRules(node.Path, node.Depth, node.Depth+3, ft.gitignoreRules)
+			node.Expanded = true
+		}
+	}
+	for i := range node.Children {
+		ft.setExpandRecursive(&node.Children[i], state)
+	}
+}
+
+func (ft *FileTree) GetSelectedPaths() []string {
+	var paths []string
+	ft.Root.collectSelected(&paths)
 	return paths
+}
+
+func (n *FileNode) collectSelected(paths *[]string) {
+	if n.Selected && !n.IsDir {
+		*paths = append(*paths, n.Path)
+	}
+	for i := range n.Children {
+		n.Children[i].collectSelected(paths)
+	}
 }

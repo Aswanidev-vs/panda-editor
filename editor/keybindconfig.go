@@ -62,6 +62,7 @@ type KeyBindConfig struct {
 
 	Undo            []string `json:"undo"`
 	Redo            []string `json:"redo"`
+	CopyBundle      []string `json:"copy_bundle"`
 
 	NextTab         []string `json:"next_tab"`
 	PrevTab         []string `json:"prev_tab"`
@@ -158,6 +159,7 @@ func DefaultKeyBindConfig() KeyBindConfig {
 
 		Undo:            []string{"ctrl+z"},
 		Redo:            []string{"ctrl+y", "ctrl+shift+z"},
+		CopyBundle:      []string{"ctrl+shift+c"},
 
 		NextTab:         []string{"ctrl+tab", "ctrl+pagedown"},
 		PrevTab:         []string{"ctrl+shift+tab", "ctrl+pageup"},
@@ -262,6 +264,7 @@ func LoadKeyBindConfig() KeyBindConfig {
 	if loaded.SearchPrev != nil { cfg.SearchPrev = loaded.SearchPrev }
 	if loaded.Undo != nil { cfg.Undo = loaded.Undo }
 	if loaded.Redo != nil { cfg.Redo = loaded.Redo }
+	if loaded.CopyBundle != nil { cfg.CopyBundle = loaded.CopyBundle }
 	if loaded.NextTab != nil { cfg.NextTab = loaded.NextTab }
 	if loaded.PrevTab != nil { cfg.PrevTab = loaded.PrevTab }
 	if loaded.CloseTab != nil { cfg.CloseTab = loaded.CloseTab }
@@ -390,6 +393,7 @@ func (cfg *KeyBindConfig) GetKeyBindEntries() []KeyBindEntry {
 		{"force_quit", "Force Quit", "General", "Force quit", cfg.ForceQuit, &cfg.ForceQuit},
 		{"show_keybindings", "Keybinding Editor", "General", "Edit keybindings", cfg.ShowKeybindings, &cfg.ShowKeybindings},
 		{"show_help", "Help", "General", "Show help overlay", cfg.ShowHelp, &cfg.ShowHelp},
+		{"copy_bundle", "Copy AI Bundle", "AI", "Copy selected files as context", cfg.CopyBundle, &cfg.CopyBundle},
 		{"toggle_terminal", "Toggle Terminal", "General", "Open external terminal", cfg.ToggleTerminal, &cfg.ToggleTerminal},
 	}
 }

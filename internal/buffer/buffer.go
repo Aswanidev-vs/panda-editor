@@ -312,11 +312,11 @@ func (b *Buffer) GetWordAt(line, col int) string {
 		return ""
 	}
 	start := col
-	for start > 0 && isWordChar(runes[start-1]) {
+	for start > 0 && IsWordChar(runes[start-1]) {
 		start--
 	}
 	end := col
-	for end < len(runes) && isWordChar(runes[end]) {
+	for end < len(runes) && IsWordChar(runes[end]) {
 		end++
 	}
 	if start == end {
@@ -325,7 +325,7 @@ func (b *Buffer) GetWordAt(line, col int) string {
 	return string(runes[start:end])
 }
 
-func isWordChar(r rune) bool {
+func IsWordChar(r rune) bool {
 	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_'
 }
 
@@ -460,8 +460,8 @@ func (b *Buffer) DeleteWordLeft(line, col int) (int, int) {
 		i--
 	}
 	// Delete until next whitespace or start of line
-	if i >= 0 && isWordChar(runes[i]) {
-		for i >= 0 && isWordChar(runes[i]) {
+	if i >= 0 && IsWordChar(runes[i]) {
+		for i >= 0 && IsWordChar(runes[i]) {
 			i--
 		}
 	} else if i >= 0 {
@@ -477,5 +477,79 @@ func (b *Buffer) DeleteWordLeft(line, col int) (int, int) {
 	return line, i + 1
 }
 
+func (b *Buffer) FindMatchingBracket(line, col int) (int, int) {
+	if line < 0 || line >= len(b.Lines) {
+		return -1, -1
+	}
+	runes := []rune(b.Lines[line])
+	if col < 0 || col >= len(runes) {
+		return -1, -1
+	}
 
+	char := runes[col]
+	pairs := map[rune]rune{
+		'(': ')', ')': '(',
+		'{': '}', '}': '{',
+		'[': ']', ']': '[',
+	}
 
+	other, ok := pairs[char]
+	if !ok {
+		return -1, -1
+	}
+
+	direction := 1
+	if char == ')' || char == '}' || char == ']' {
+		direction = -1
+	}
+
+	stack := 0
+	currLine := line
+	currCol := col
+
+	for {
+		currCol += direction
+		if direction == 1 {
+			for currLine < len(b.Lines) && currCol >= len([]rune(b.Lines[currLine])) {
+				currLine++
+				currCol = 0
+			}
+			if currLine >= len(b.Lines) {
+				return -1, -1
+			}
+		} else {
+			for currLine >= 0 && currCol < 0 {
+				currLine--
+				if currLine >= 0 {
+					currCol = len([]rune(b.Lines[currLine])) - 1
+				}
+			}
+			if currLine < 0 {
+				return -1, -1
+			}
+		}
+
+		lineRunes := []rune(b.Lines[currLine])
+		if currCol < 0 || currCol >= len(lineRunes) {
+			return -1, -1
+		}
+
+		currChar := lineRunes[currCol]
+		if currChar == char {
+			stack++
+		} else if currChar == other {
+			if stack == 0 {
+				return currLine, currCol
+			}
+			stack--
+		}
+
+		// Limit search to 5000 lines to avoid hanging on large files without matches
+		if direction == 1 && currLine > line+5000 {
+			return -1, -1
+		}
+		if direction == -1 && currLine < line-5000 {
+			return -1, -1
+		}
+	}
+}

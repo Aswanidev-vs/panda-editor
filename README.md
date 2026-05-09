@@ -5,23 +5,44 @@ Panda Editor is a blazingly fast, modern Terminal User Interface (TUI) text edit
 ## ✨ Features
 
 - **Modern Aesthetic**: A beautiful UI powered by Lipgloss with customizable themes, glassmorphism-inspired overlays, and smooth animations.
-- **Language Intelligence**: Syntax highlighting for 200+ languages via Chroma, and built-in Language Server Protocol (LSP) support (pre-configured for `gopls`).
-- **AI-Ready Workflow (CodeGrab Integration)**:
+- **Language Intelligence**: 
+  - Syntax highlighting for 20+ languages.
+  - **LSP Diagnostics**: Integration with `gopls` and other language servers for real-time error reporting (displayed as gutter markers `⊗` and diagnostic hints).
+  - **Word-based Autocomplete**: Smart heuristic suggestions as you type.
+- **Split-Pane Editing**: Side-by-side editing for multitasking (`Ctrl+\`).
+- **Minimap**: A bird's-eye code view for quick navigation in large files.
+- **AI-Ready Workflow (Bundler)**:
   - **Multi-Select Explorer**: Mark files with `<kbd>Space</kbd>` to include them in an AI context bundle.
-  - **Auto-Dependency Resolution**: Automatically parses Go imports and bundles local dependencies.
-  - **One-Click Export**: Use the Command Palette to instantly generate a Markdown bundle of your selected files directly to your system clipboard.
-  - **Token Estimator**: Live token count estimation in the status bar.
-  - **Secret Redaction**: Automatically scrubs obvious API keys and tokens before copying.
+  - **Multiple Formats**: Export bundles as **Markdown**, **XML**, or **Plain Text**.
+  - **One-Click Export**: Press `<kbd>Ctrl+Shift+C</kbd>` to bundle all selected files and copy them to your system clipboard instantly.
+  - **Auto-Dependency Resolution**: Intelligent parsing of imports to bundle local dependencies.
+  - **Token Estimator**: Real-time token-weight estimation in the status bar (~4 characters per token).
+- **Git Integration**:
+  - Current branch displayed in the status bar.
+  - **Gutter Markers**: Visual indicators for Added (`+`), Modified (`~`), and Deleted (`-`) lines relative to the Git index.
+- **Explorer CRUD & Search**: 
+  - Create (`n`), Rename (`R`), and Delete (`d`) files directly from the explorer.
+  - Fuzzy search within the file tree (`/`).
 - **Robust Navigation**:
   - Command Palette (`Ctrl+Shift+P`)
   - Fuzzy File Finder (`Ctrl+P`)
-  - Global Search across the project
-  - Multi-tab management
-- **VS Code-Like Keybindings**: Familiar default shortcuts (`Ctrl+S` to save, `Ctrl+B` for sidebar, etc.) that are fully customizable.
+  - Global Project Search (`Alt+F`)
+  - Multi-tab management and session restoration.
+- **VS Code-Like Keybindings**: Familiar default shortcuts that are fully customizable.
 
 ## 📦 Installation
 
-To install Panda Editor from source, ensure you have Go 1.21+ installed.
+Ensure you have Go 1.21+ installed.
+
+### Go Install (Recommended)
+
+```sh
+go install github.com/Aswanidev-vs/panda-editor@latest
+```
+
+This will compile and install the `panda-editor` binary directly into your `$GOPATH/bin`.
+
+### Build from Source
 
 ```sh
 git clone https://github.com/Aswanidev-vs/panda-editor.git
@@ -29,7 +50,7 @@ cd panda-editor
 go build -o panda.exe .
 ```
 
-Then move `panda.exe` to a directory in your system's `PATH`.
+Then move `panda.exe` (or `panda` on Linux/macOS) to a directory in your system's `PATH`.
 
 ## 🚀 Quick Start
 
@@ -38,37 +59,50 @@ Then move `panda.exe` to a directory in your system's `PATH`.
    ```sh
    panda
    ```
-   *Optionally, pass a file or directory path as an argument.*
 3. Press `Ctrl+B` to open the file explorer and use arrows (or `j`/`k`) to navigate.
-4. Press `Enter` to open a file.
-5. Press `Ctrl+Shift+P` to open the Command Palette and explore available actions.
+4. Press `Space` to select files for AI bundling, then `Ctrl+Shift+C` to copy the context.
+5. Press `Ctrl+Shift+P` to open the Command Palette and explore all available actions.
 
 ## ⌨️ Keybindings
-
-Panda Editor comes with familiar defaults that can be customized in the Keybindings menu (`Ctrl+Shift+P` -> `Keyboard Shortcuts`).
 
 | Action | Shortcut |
 | :--- | :--- |
 | **Command Palette** | `Ctrl+Shift+P` |
 | **Open File (Fuzzy)** | `Ctrl+P` |
 | **Save File** | `Ctrl+S` |
-| **Focus Explorer** | `Ctrl+B` |
-| **Toggle Sidebar (Vis)**| `Ctrl+\` |
+| **Quick Bundle (AI)** | `Ctrl+Shift+C` |
+| **Toggle Sidebar** | `Ctrl+B` |
+| **Split Pane** | `Ctrl+\` |
 | **Global Search** | `Alt+F` |
+| **Search in File** | `Ctrl+F` |
+| **Go To Line** | `Ctrl+G` |
 | **New Tab** | `Ctrl+N` |
-| **Next Tab** | `Ctrl+Tab` or `Ctrl+PageDown` |
-| **Close Tab** | `Ctrl+W` |
+| **Next Tab** | `Ctrl+Tab` |
 | **Toggle Theme** | `Ctrl+T` |
-| **Bundle for AI** | `Space` (in Explorer) to select, then use Command Palette |
+| **Toggle Terminal** | `Ctrl+J` |
+| **Show Help** | `F1` |
 | **Quit** | `Ctrl+Q` |
+
+### Explorer Keybindings
+- `j` / `k`: Navigate
+- `Enter`: Open File / Expand Directory
+- `Space`: Select for Bundling
+- `e`: Expand/Collapse All
+- `/`: Filter Tree
+- `n`: New File
+- `R`: Rename
+- `d`: Delete
+- `t`: Toggle Token Display
+- `B`: Cycle Bundle Format (Markdown -> XML -> Text)
 
 ## 🛠️ Architecture
 
 Panda Editor is structured around the Bubble Tea TEA (The Elm Architecture) paradigm:
 - `editor/model.go`: The core state machine and event loop.
 - `editor/view.go`: The UI rendering engine utilizing `lipgloss`.
-- `internal/bundler`: The AST-aware AI context generation engine.
-- `internal/buffer`: The text buffer management and manipulation primitives.
+- `internal/bundler`: AST-aware AI context generation engine.
+- `internal/buffer`: Text buffer management and manipulation primitives.
+- `internal/lsp`: Lightweight LSP client for language intelligence.
 
 ---
 *Built with ❤️ and Go.*

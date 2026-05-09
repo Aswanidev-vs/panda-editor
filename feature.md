@@ -41,13 +41,13 @@ This document tracks the integration of features inspired by the `CodeGrab` LLM-
 *   **Feature**: Respect `.gitignore` rules in the file explorer sidebar
 *   **Description**: Parse the project's `.gitignore` file and automatically hide matching files/directories from the tree (e.g., `node_modules/`, `*.exe`, build artifacts). Add a toggle key (`i`) to show/hide ignored files.
 *   **Inspiration**: CodeGrab's `.gitignore` filter toggle (`i` key).
-*   **Status**: 🔲 Planned.
+*   **Status**: ✅ Completed. Gitignore parser integrated into `buildTreeWithRules`.
 
 ### Phase 7: Directory Selection (Recursive)
 *   **Feature**: Select/deselect entire directories for AI bundling
 *   **Description**: When a user presses `Space` on a folder, recursively select/deselect all files within it. This massively speeds up the workflow for bundling an entire package.
 *   **Inspiration**: CodeGrab's recursive directory selection via `Tab`/`Space`.
-*   **Status**: 🔲 Planned.
+*   **Status**: ✅ Completed. `setSelectRecursive` propagates selection to all children.
 
 ### Phase 8: Multiple Output Formats
 *   **Feature**: XML and Plain Text export options
@@ -110,5 +110,9 @@ This document tracks the integration of features inspired by the `CodeGrab` LLM-
 
 ### Phase 18: Split Panes
 *   **Feature**: Horizontal/vertical split editor panes
+*   **Description**: Allow users to view two files side-by-side within the terminal. Use `Ctrl+|` for vertical split and `Ctrl+-` for horizontal split.
+*   **Status**: 🔲 Planned.
+### phase 19 :terminal support
+*   **Feature**: Terminal support
 *   **Description**: Allow users to view two files side-by-side within the terminal. Use `Ctrl+|` for vertical split and `Ctrl+-` for horizontal split.
 *   **Status**: 🔲 Planned.

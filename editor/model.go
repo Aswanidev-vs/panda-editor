@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -47,6 +48,7 @@ const (
 	ViewOpenFolder
 	ViewGlobalSearch
 	ViewUnsavedPrompt
+	ViewFileTreeFilter
 )
 
 type ActionType int
@@ -57,6 +59,7 @@ const (
 	ActionCloseTab
 	ActionCloseSession
 	ActionOpenFolder
+	ActionDelete
 )
 
 type UndoState struct {
@@ -140,7 +143,8 @@ type Editor struct {
 	hasSession       bool
 	sessionTimer     int
 	welcomeCursor    int
-	openFolderInput  textinput.Model
+	openFolderInput     textinput.Model
+	fileTreeFilterInput textinput.Model
 	fileWatcher      *watcher.Watcher
 	fileChangeChan   chan string
 
@@ -166,6 +170,15 @@ type Editor struct {
 	pendingAction ActionType
 	postSaveAction ActionType
 	unsavedTabIdx int
+	pendingRename string
+	pendingDelete string
+	fileDiffs     map[string]map[int]string // [filepath][line_number]marker
+	suggestions   []string
+	suggestionIdx int
+	splitActive   bool
+	activePanel   int // 0: left, 1: right
+	rightTab      int // index of tab in right panel
+	bundleFormat  int // 0: Markdown, 1: XML, 2: Plain Text
 }
 
 type Cursor struct {
@@ -219,9 +232,14 @@ func NewEditor() Editor {
 	ofi.Width = 50
 
 	gsi := textinput.New()
-	gsi.Placeholder = "Global search..."
+	gsi.Placeholder = "Search everywhere..."
 	gsi.CharLimit = 256
 	gsi.Width = 50
+
+	ftfi := textinput.New()
+	ftfi.Placeholder = "Filter tree..."
+	ftfi.CharLimit = 128
+	ftfi.Width = 30
 
 	cwd, _ := os.Getwd()
 	if cwd == "" {
@@ -256,11 +274,13 @@ func NewEditor() Editor {
 		welcomeCursor:     0,
 		fileChangeChan:    make(chan string, 10),
 		globalSearchInput: gsi,
+		fileTreeFilterInput: ftfi,
 		searchResultChan:  make(chan []searcher.SearchResult, 10),
 		searchDoneChan:    make(chan bool, 1),
 		lspClients:        make(map[string]*lsp.Client),
 		lspDiagChan:       make(chan DiagnosticMsg, 10),
 		fileDiagnostics:   make(map[string][]lsp.Diagnostic),
+		fileDiffs:         make(map[string]map[int]string),
 		gitBranchTimer:    0,
 		config:            cfg,
 	}
@@ -343,14 +363,25 @@ func (e *Editor) walkDir(dir string, depth int) {
 }
 
 func (e *Editor) currentTab() *Tab {
-	if e.activeTab < 0 || e.activeTab >= len(e.tabs) {
+	if len(e.tabs) == 0 {
+		return nil
+	}
+	idx := e.activeTab
+	if e.splitActive && e.activePanel == 1 {
+		idx = e.rightTab
+	}
+	if idx < 0 || idx >= len(e.tabs) {
 		return &e.tabs[0]
 	}
-	return &e.tabs[e.activeTab]
+	return &e.tabs[idx]
 }
 
 func (e *Editor) currentBuf() *buffer.Buffer {
-	return e.currentTab().Buf
+	tab := e.currentTab()
+	if tab == nil {
+		return nil
+	}
+	return tab.Buf
 }
 
 func (e *Editor) Init() tea.Cmd {
@@ -460,10 +491,14 @@ func (e *Editor) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return e, e.listenForDiagnostics()
 	}
 
-	// Update git branch periodically
+	// Update git info periodically
 	if e.gitBranchTimer <= 0 {
 		e.gitBranch = e.getGitBranch()
-		e.gitBranchTimer = 1000 // roughly every 10-20 seconds depending on frame rate
+		tab := e.currentTab()
+		if tab != nil && tab.Buf != nil && tab.Buf.FilePath != "" {
+			e.fileDiffs[tab.Buf.FilePath] = e.getGitDiffs(tab.Buf.FilePath)
+		}
+		e.gitBranchTimer = 500 // roughly every 5-10 seconds
 	} else {
 		e.gitBranchTimer--
 	}
@@ -495,6 +530,8 @@ func (e *Editor) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return e.updateGlobalSearch(msg)
 	case ViewUnsavedPrompt:
 		return e.updateUnsavedPrompt(msg)
+	case ViewFileTreeFilter:
+		return e.updateFileTreeFilter(msg)
 	}
 
 	result, cmd := e.updateNormal(msg)
@@ -578,7 +615,6 @@ func (e *Editor) updateNormal(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				e.mode = ViewNormal
 			}
-			return e, nil
 			return e, nil
 
 		case key.Matches(msg, e.keys.CommandPalette):
@@ -773,6 +809,10 @@ func (e *Editor) updateNormal(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, e.keys.Copy):
 			return e.handleCopy()
 
+		case key.Matches(msg, e.keys.CopyBundle):
+			e.handleBundle()
+			return e, nil
+
 		case key.Matches(msg, e.keys.Cut):
 			return e.handleCut()
 
@@ -780,13 +820,29 @@ func (e *Editor) updateNormal(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return e.handlePaste()
 
 		case key.Matches(msg, e.keys.CursorUp):
+			if len(e.suggestions) > 0 {
+				e.suggestionIdx--
+				if e.suggestionIdx < 0 {
+					e.suggestionIdx = len(e.suggestions) - 1
+				}
+				return e, nil
+			}
 			tab.SelectActive = false
 			e.moveCursorUp()
+			e.suggestions = nil
 			return e, nil
 
 		case key.Matches(msg, e.keys.CursorDown):
+			if len(e.suggestions) > 0 {
+				e.suggestionIdx++
+				if e.suggestionIdx >= len(e.suggestions) {
+					e.suggestionIdx = 0
+				}
+				return e, nil
+			}
 			tab.SelectActive = false
 			e.moveCursorDown()
+			e.suggestions = nil
 			return e, nil
 
 		case key.Matches(msg, e.keys.CursorLeft):
@@ -865,10 +921,15 @@ func (e *Editor) updateNormal(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return e, nil
 
 		case key.Matches(msg, e.keys.InsertNewline):
+			if len(e.suggestions) > 0 {
+				e.acceptSuggestion(e.suggestions[e.suggestionIdx])
+				return e, nil
+			}
 			e.pushUndo()
 			tab.SelectActive = false
 			tab.CursorLine, tab.CursorCol = e.currentBuf().InsertNewline(tab.CursorLine, tab.CursorCol)
 			e.ensureCursorVisible()
+			e.suggestions = nil
 			return e, nil
 
 		case key.Matches(msg, e.keys.Backspace):
@@ -919,6 +980,10 @@ func (e *Editor) updateNormal(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return e, nil
 
 		case key.Matches(msg, e.keys.IndentLine):
+			if len(e.suggestions) > 0 {
+				e.acceptSuggestion(e.suggestions[e.suggestionIdx])
+				return e, nil
+			}
 			e.pushUndo()
 			e.handleIndent()
 			return e, nil
@@ -942,6 +1007,7 @@ func (e *Editor) updateNormal(msg tea.Msg) (tea.Model, tea.Cmd) {
 					tab.CursorLine, tab.CursorCol = e.currentBuf().InsertChar(tab.CursorLine, tab.CursorCol, string(r))
 				}
 				e.ensureCursorVisible()
+				e.updateSuggestions()
 				return e, nil
 			}
 		}
@@ -1721,7 +1787,43 @@ func (e *Editor) executeCommand(action string) (tea.Model, tea.Cmd) {
 			e.showMessage("Failed to write to clipboard: " + err.Error())
 			return e, nil
 		}
-		e.showMessage(fmt.Sprintf("Bundled %d files to clipboard", len(paths)))
+		e.showMessage(fmt.Sprintf("Bundled %d files to clipboard (Markdown)", len(paths)))
+		return e, nil
+
+	case "bundle_xml":
+		paths := e.fileTree.GetSelectedPaths()
+		if len(paths) == 0 {
+			e.showMessage("No files selected for AI bundle")
+			return e, nil
+		}
+		out, err := bundler.GenerateXML(paths)
+		if err != nil {
+			e.showMessage("Failed to generate XML bundle: " + err.Error())
+			return e, nil
+		}
+		if err := clipboard.WriteAll(out); err != nil {
+			e.showMessage("Failed to write to clipboard: " + err.Error())
+			return e, nil
+		}
+		e.showMessage(fmt.Sprintf("Bundled %d files to clipboard (XML)", len(paths)))
+		return e, nil
+
+	case "bundle_text":
+		paths := e.fileTree.GetSelectedPaths()
+		if len(paths) == 0 {
+			e.showMessage("No files selected for AI bundle")
+			return e, nil
+		}
+		out, err := bundler.GeneratePlainText(paths)
+		if err != nil {
+			e.showMessage("Failed to generate text bundle: " + err.Error())
+			return e, nil
+		}
+		if err := clipboard.WriteAll(out); err != nil {
+			e.showMessage("Failed to write to clipboard: " + err.Error())
+			return e, nil
+		}
+		e.showMessage(fmt.Sprintf("Bundled %d files to clipboard (Text)", len(paths)))
 		return e, nil
 
 	case "search":
@@ -2174,6 +2276,27 @@ func (e *Editor) updateSaveAs(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter":
 			path := e.saveAsInput.Value()
 			if path != "" {
+				// Phase 17: Handle rename
+				if e.pendingRename != "" {
+					if err := os.Rename(e.pendingRename, path); err != nil {
+						e.showMessage("Rename failed: " + err.Error())
+					} else {
+						e.showMessage("Renamed to: " + filepath.Base(path))
+						e.fileTree = NewFileTree(e.fileTreeRoot)
+						e.buildFileList()
+						// Update any open tab pointing to old path
+						for i := range e.tabs {
+							if e.tabs[i].Buf.FilePath == e.pendingRename {
+								e.tabs[i].Buf.FilePath = path
+								e.tabs[i].Buf.Name = filepath.Base(path)
+							}
+						}
+					}
+					e.pendingRename = ""
+					e.mode = ViewFileTree
+					e.saveAsInput.Blur()
+					return e, nil
+				}
 				if err := e.currentBuf().SaveAs(path); err != nil {
 					e.showMessage(fmt.Sprintf("Error: %v", err))
 				} else {
@@ -2730,15 +2853,109 @@ func (e *Editor) updateFileTree(msg tea.Msg) (tea.Model, tea.Cmd) {
 				e.fileTree.AdjustScroll(e.editorHeight())
 			}
 			return e, nil
+
+		// Phase 10: Expand/Collapse all
+		case "e":
+			e.fileTree.ToggleExpandAll()
+			e.fileTree.AdjustScroll(e.editorHeight())
+			return e, nil
+
+		// Phase 9: Toggle per-file token display
+		case "t":
+			e.fileTree.ShowTokens = !e.fileTree.ShowTokens
+			if e.fileTree.ShowTokens {
+				e.showMessage("Token display: ON")
+			} else {
+				e.showMessage("Token display: OFF")
+			}
+			return e, nil
+
+		// Phase 8: Toggle bundle format
+		case "B":
+			e.bundleFormat = (e.bundleFormat + 1) % 3
+			formats := []string{"Markdown", "XML", "Plain Text"}
+			e.showMessage("Bundle format: " + formats[e.bundleFormat])
+			return e, nil
+
+		// Phase 17: File CRUD from explorer
+		case "n":
+			node := e.fileTree.SelectedNode()
+			dir := e.fileTreeRoot
+			if node != nil {
+				if node.IsDir {
+					dir = node.Path
+				} else {
+					dir = filepath.Dir(node.Path)
+				}
+			}
+			e.mode = ViewSaveAs
+			e.saveAsInput.SetValue(dir + string(os.PathSeparator))
+			e.saveAsInput.Focus()
+			return e, textinput.Blink
+
+		case "R":
+			node := e.fileTree.SelectedNode()
+			if node == nil || node.Depth == 0 {
+				return e, nil
+			}
+			e.mode = ViewSaveAs
+			e.saveAsInput.SetValue(node.Path)
+			e.saveAsInput.Focus()
+			e.pendingRename = node.Path
+			return e, textinput.Blink
+
+		case "d":
+			node := e.fileTree.SelectedNode()
+			if node == nil || node.Depth == 0 {
+				return e, nil
+			}
+			e.pendingDelete = node.Path
+			e.mode = ViewUnsavedPrompt
+			e.pendingAction = ActionDelete
+			return e, nil
+
+		// Phase 12: Fuzzy search within explorer
+		case "/":
+			e.mode = ViewFileTreeFilter
+			e.fileTreeFilterInput.Focus()
+			return e, textinput.Blink
 		}
 
-		// Also allow Ctrl+B to go back to editor from the file tree
 		if key.Matches(msg, e.keys.OpenExplorer) {
 			e.mode = ViewNormal
 			return e, nil
 		}
 	}
 	return e, nil
+}
+
+func (e *Editor) updateFileTreeFilter(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "esc":
+			e.mode = ViewFileTree
+			e.fileTreeFilterInput.Blur()
+			return e, nil
+		case "enter":
+			e.mode = ViewFileTree
+			e.fileTreeFilterInput.Blur()
+			return e, nil
+		}
+	}
+
+	var cmd tea.Cmd
+	oldVal := e.fileTreeFilterInput.Value()
+	e.fileTreeFilterInput, cmd = e.fileTreeFilterInput.Update(msg)
+	newVal := e.fileTreeFilterInput.Value()
+
+	if oldVal != newVal {
+		e.fileTree.Filter = newVal
+		e.fileTree.Flatten()
+		e.fileTree.Cursor = 0
+	}
+
+	return e, cmd
 }
 
 func (e *Editor) updateGlobalSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -2826,6 +3043,62 @@ func (e *Editor) getGitBranch() string {
 	return strings.TrimSpace(string(out))
 }
 
+func (e *Editor) getGitDiffs(path string) map[int]string {
+	if path == "" {
+		return nil
+	}
+	cmd := exec.Command("git", "diff", "-U0", path)
+	cmd.Dir = e.fileTreeRoot
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+
+	diffs := make(map[int]string)
+	lines := strings.Split(string(out), "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "@@") {
+			// Parse @@ -L,C +L,C @@
+			parts := strings.Split(line, " ")
+			if len(parts) < 3 {
+				continue
+			}
+			// parts[2] is +L,C or +L
+			target := strings.TrimPrefix(parts[2], "+")
+			targetParts := strings.Split(target, ",")
+			startLine, _ := strconv.Atoi(targetParts[0])
+			count := 1
+			if len(targetParts) > 1 {
+				count, _ = strconv.Atoi(targetParts[1])
+			}
+
+			// parts[1] is -L,C or -L
+			source := strings.TrimPrefix(parts[1], "-")
+			sourceParts := strings.Split(source, ",")
+			sourceLen := 1
+			if len(sourceParts) > 1 {
+				sourceLen, _ = strconv.Atoi(sourceParts[1])
+			}
+
+			if sourceLen == 0 && count > 0 {
+				// Added
+				for i := 0; i < count; i++ {
+					diffs[startLine+i-1] = "+"
+				}
+			} else if sourceLen > 0 && count > 0 {
+				// Modified
+				for i := 0; i < count; i++ {
+					diffs[startLine+i-1] = "~"
+				}
+			} else if sourceLen > 0 && count == 0 {
+				// Deleted
+				diffs[startLine-1] = "-"
+			}
+		}
+	}
+	return diffs
+}
+
 func (e *Editor) closeSession() {
 	e.tabs = nil
 	e.activeTab = 0
@@ -2875,6 +3148,25 @@ func (e *Editor) executePendingAction() (tea.Model, tea.Cmd) {
 		e.closeSession()
 		e.pendingAction = ActionNone
 		return e, nil
+
+	case ActionDelete:
+		if e.pendingDelete != "" {
+			err := os.Remove(e.pendingDelete)
+			if err != nil {
+				// Try removing directory
+				err = os.RemoveAll(e.pendingDelete)
+			}
+			if err != nil {
+				e.showMessage("Delete failed: " + err.Error())
+			} else {
+				e.showMessage("Deleted: " + filepath.Base(e.pendingDelete))
+				e.fileTree = NewFileTree(e.fileTreeRoot)
+				e.buildFileList()
+			}
+			e.pendingDelete = ""
+		}
+		e.pendingAction = ActionNone
+		return e, nil
 	}
 	return e, nil
 }
@@ -2890,5 +3182,101 @@ func (e *Editor) saveTab(idx int) {
 	err := tab.Buf.Save()
 	if err != nil {
 		e.showMessage("Save failed: " + err.Error())
+	}
+}
+
+func (e *Editor) updateSuggestions() {
+	tab := e.currentTab()
+	if tab == nil || tab.Buf == nil {
+		e.suggestions = nil
+		return
+	}
+
+	line := tab.Buf.GetLine(tab.CursorLine)
+	runes := []rune(line)
+	if tab.CursorCol <= 0 || tab.CursorCol > len(runes) {
+		e.suggestions = nil
+		return
+	}
+
+	// Get word before cursor
+	start := tab.CursorCol - 1
+	for start >= 0 && buffer.IsWordChar(runes[start]) {
+		start--
+	}
+	prefix := string(runes[start+1 : tab.CursorCol])
+	if len(prefix) < 2 {
+		e.suggestions = nil
+		return
+	}
+
+	// Simple word-based completion from current buffer
+	words := make(map[string]bool)
+	for _, l := range tab.Buf.Lines {
+		for _, w := range strings.FieldsFunc(l, func(r rune) bool { return !buffer.IsWordChar(r) }) {
+			if strings.HasPrefix(w, prefix) && w != prefix {
+				words[w] = true
+			}
+		}
+	}
+
+	var suggestions []string
+	for w := range words {
+		suggestions = append(suggestions, w)
+	}
+	sort.Strings(suggestions)
+	if len(suggestions) > 8 {
+		suggestions = suggestions[:8] // Limit to 8
+	}
+	e.suggestions = suggestions
+	e.suggestionIdx = 0
+}
+
+func (e *Editor) acceptSuggestion(suggestion string) {
+	tab := e.currentTab()
+	line := tab.Buf.GetLine(tab.CursorLine)
+	runes := []rune(line)
+
+	start := tab.CursorCol - 1
+	for start >= 0 && buffer.IsWordChar(runes[start]) {
+		start--
+	}
+
+	newRunes := append(runes[:start+1], []rune(suggestion)...)
+	newRunes = append(newRunes, runes[tab.CursorCol:]...)
+	tab.Buf.SetLine(tab.CursorLine, string(newRunes))
+	tab.CursorCol = start + 1 + len(suggestion)
+	e.suggestions = nil
+}
+
+func (e *Editor) handleBundle() {
+	paths := e.fileTree.GetSelectedPaths()
+	if len(paths) == 0 {
+		e.showMessage("No files selected -- use Space in explorer")
+		return
+	}
+
+	format := bundler.FormatMarkdown
+	switch e.bundleFormat {
+	case 1:
+		format = bundler.FormatXML
+	case 2:
+		format = bundler.FormatPlainText
+	}
+
+	bundle, err := bundler.GenerateBundle(paths, format)
+	if err != nil {
+		e.showMessage("Bundle error: " + err.Error())
+		return
+	}
+
+	// Try to copy to system clipboard
+	err = clipboard.WriteAll(bundle)
+	if err != nil {
+		// Fallback to internal clipboard if system clipboard fails
+		e.clipboard = bundle
+		e.showMessage(fmt.Sprintf("System clipboard failed, stored internally -- %d files", len(paths)))
+	} else {
+		e.showMessage(fmt.Sprintf("Copied bundle -- %d files -- to clipboard", len(paths)))
 	}
 }

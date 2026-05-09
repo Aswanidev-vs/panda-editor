@@ -83,6 +83,7 @@ type KeyMap struct {
 
 	ShowKeybindings key.Binding
 	ShowHelp        key.Binding
+	CopyBundle      key.Binding
 	ToggleTerminal  key.Binding
 }
 
@@ -179,6 +180,7 @@ func KeyMapFromConfig(cfg KeyBindConfig) KeyMap {
 
 		ShowKeybindings: keysBinding(cfg.ShowKeybindings),
 		ShowHelp:        keysBinding(cfg.ShowHelp),
+		CopyBundle:      keysBinding(cfg.CopyBundle),
 		ToggleTerminal:  keysBinding(cfg.ToggleTerminal),
 	}
 }
