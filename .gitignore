@@ -1,0 +1,28 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+panda-editor.exe
+panda.exe
+test.exe
+
+# Project specific ignores
+refer/
+
+# Go workspaces
+go.work
+go.work.sum
+
+# IDE / OS specific
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Temp files
+*.log
+*.tmp
