@@ -41,6 +41,12 @@ func (e *Editor) View() string {
 	}
 	sections = append(sections, mainContent)
 
+	// Terminal panel
+	if e.termVisible {
+		termPanel := e.renderTerminal()
+		sections = append(sections, termPanel)
+	}
+
 	// Status bar
 	statusBar := e.renderStatusBar()
 	sections = append(sections, statusBar)
@@ -2049,4 +2055,54 @@ func (e *Editor) renderSettingsOverlay(bg string) string {
 	oW := lipgloss.Width(overlay)
 	oH := lipgloss.Height(overlay)
 	return placeOverlay(e.width/2-oW/2, e.height/2-oH/2, overlay, bg)
+}
+
+func (e *Editor) renderTerminal() string {
+	t := theme.CurrentTheme
+	h := e.termHeight
+	w := e.width
+
+	// Terminal border style
+	borderStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(t.LineNum).
+		Width(w)
+
+	// Title area
+	title := " TERMINAL "
+	if e.termFocused {
+		title = " TERMINAL (focused) "
+	}
+	titleStyle := lipgloss.NewStyle().Foreground(t.Accent).Bold(true)
+
+	// Output area
+	var output string
+	if e.term != nil {
+		e.term.Resize(w-2, h-1)
+		output = e.term.View()
+	} else {
+		output = "Press Ctrl+` to start terminal."
+	}
+
+	// Input bar
+	var inputBar string
+	if e.termFocused && e.term != nil && e.term.IsRunning() {
+		promptStyle := lipgloss.NewStyle().Foreground(t.Accent)
+		inputBar = "\n" + promptStyle.Render("$ ") + e.term.input + "█"
+	}
+
+	// Padding
+	padStyle := lipgloss.NewStyle().Padding(0, 1)
+	content := titleStyle.Render(title) + "\n" + output + inputBar
+	rendered := padStyle.Render(content)
+
+	// Fill remaining width
+	lines := strings.Split(rendered, "\n")
+	for i, line := range lines {
+		if len(line) < w {
+			lines[i] = line + strings.Repeat(" ", w-len(line))
+		}
+	}
+
+	return borderStyle.Render(strings.Join(lines, "\n"))
 }

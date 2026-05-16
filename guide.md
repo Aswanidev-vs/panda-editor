@@ -20,6 +20,7 @@ This guide lists the **default** keybindings as defined in `editor/keybindconfig
 | Cursor Right | `right` |
 | Word Left | `ctrl+left`, `alt+b` |
 | Word Right | `ctrl+right`, `alt+f` |
+| | Word boundaries: `[a-zA-Z0-9_]` (split at punctuation/brackets) |
 | Line Start | `home` |
 | Line End | `end` |
 | File Start | `ctrl+home` |
@@ -60,6 +61,7 @@ This guide lists the **default** keybindings as defined in `editor/keybindconfig
 | Select Right (extend) | `shift+right` |
 | Select Word Left | `ctrl+shift+left` |
 | Select Word Right | `ctrl+shift+right` |
+| | Word selection uses same `[a-zA-Z0-9_]` boundaries |
 | Select to Line Start | `shift+home` |
 | Select to Line End | `shift+end` |
 | Select All | `ctrl+a` |
@@ -126,7 +128,7 @@ This guide lists the **default** keybindings as defined in `editor/keybindconfig
 | Force Quit | `ctrl+shift+q` |
 | Keybinding Editor | `ctrl+k` |
 | Help Overlay | `f1` |
-| Toggle Terminal | `ctrl+j` |
+| Toggle Terminal | `` ctrl+` `` or `` alt+` `` |
 
 ---
 
@@ -231,3 +233,33 @@ Set active theme in `config.json`: `"theme": "My Theme"`
 - `home`: jump to top
 - `end`: jump to bottom
 - A **scrollbar** (█) appears on the right when files exceed viewport height
+
+---
+
+## Integrated Terminal
+
+| Action | Keys |
+|---|---|
+| Toggle Terminal (show / hide) | `` ctrl+` `` |
+| Unfocus terminal (return to editor) | `` ctrl+` `` again |
+| Send input to shell | `enter` |
+| Scroll output up | `up` |
+| Scroll output down | `down` |
+| Page up | `pgup` |
+| Page down | `pgdown` |
+| Send Ctrl+C (interrupt) | `ctrl+c` |
+| Send Ctrl+D (EOF) | `ctrl+d` |
+| Send Ctrl+Z (suspend) | `ctrl+z` |
+
+The terminal opens at the bottom of the editor with a default height of 10 rows. While focused (indicated by "TERMINAL (focused)" in the title bar), all keyboard input is sent to the shell. Press `` ctrl+` `` again to unfocus and return to the editor. Press `` ctrl+` `` when unfocused to hide the terminal panel entirely.
+
+> **Note**: Some terminal emulators (e.g., Windows Terminal) may intercept `` ctrl+` `` as their own shortcut. In that case, use `` alt+` `` as a fallback, or customize the keybinding in `config.json`.
+
+## Word Boundaries
+
+Cursor movement by word (`` ctrl+left ``/`` ctrl+right ``) and word selection (`` ctrl+shift+left ``/`` ctrl+shift+right ``) use the same word-boundary rules as VS Code:
+
+- **Word characters**: `[a-zA-Z0-9_]` (alphanumeric plus underscore)
+- **Non-word characters**: everything else — `.`, `(`, `)`, `[`, `]`, `{`, `}`, `"`, `'`, `-`, `+`, `*`, `/`, etc.
+
+This means `ctrl+shift+left`/`ctrl+shift+right` select whole words at a time, splitting at punctuation and brackets — matching VS Code's word selection behavior.

@@ -10,6 +10,7 @@ Panda Editor is a blazingly fast, modern Terminal User Interface (TUI) text edit
   - **LSP Diagnostics**: Integration with `gopls` and other language servers for real-time error reporting (displayed as gutter markers `⊗` and diagnostic hints).
   - **Word-based Autocomplete**: Smart heuristic suggestions as you type.
 - **Split-Pane Editing**: Side-by-side editing for multitasking (`Ctrl+\`).
+- **Integrated Terminal**: Built-in shell panel (Ctrl+backtick or Alt+backtick) — run commands without leaving the editor.
 - **Minimap**: A bird's-eye code view for quick navigation in large files.
 - **File Icons**: Language-specific Unicode icons in the tab bar for quick visual identification.
 - **File Tree Scrollbar**: Visual scroll indicator when the file list exceeds the viewport.
@@ -84,7 +85,7 @@ Then move `panda.exe` (or `panda` on Linux/macOS) to a directory in your system'
 | **Toggle Theme** | `Ctrl+T` |
 | **Settings UI** | `Ctrl+,` |
 | **Reload Config** | via Command Palette |
-| **Toggle Terminal** | `Ctrl+J` |
+| **Toggle Terminal** | `` Ctrl+` `` or `` Alt+` `` |
 | **Show Help** | `F1` |
 | **Quit** | `Ctrl+Q` |
 

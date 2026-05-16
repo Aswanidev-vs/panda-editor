@@ -187,7 +187,7 @@ func DefaultKeyBindConfig() KeyBindConfig {
 		ShowKeybindings: []string{"alt+k"},
 		ShowHelp:        []string{"f1"},
 
-		ToggleTerminal:  []string{"ctrl+j"},
+		ToggleTerminal:  []string{"ctrl+`", "alt+`"},
 		TerminalCmd:     defaultTerminal(),
 	}
 }

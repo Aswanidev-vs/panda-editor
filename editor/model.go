@@ -183,6 +183,10 @@ type Editor struct {
 	sessionInfo      string
 	relativeLineNo   bool
 	settingsScroll   int
+	term             *TerminalModel
+	termVisible      bool
+	termFocused      bool
+	termHeight       int
 }
 
 type Cursor struct {
@@ -282,6 +286,9 @@ func NewEditor() Editor {
 		lineNumberWidth:   5,
 		statusHeight:      1,
 		tabBarHeight:      1,
+		termHeight:        10,
+		termFocused:       false,
+		termVisible:       false,
 		hasSession:        hasSession,
 		sessionInfo:        sessionInfo,
 		sessionTimer:      0,
@@ -519,6 +526,9 @@ func (e *Editor) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		e.width = msg.Width
 		e.height = msg.Height
+		if e.term != nil {
+			e.term.Resize(msg.Width-2, e.termHeight-1)
+		}
 		return e, e.tickAnimation()
 
 	case tickMsg:
@@ -630,6 +640,50 @@ func (e *Editor) updateNormal(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// Terminal-focused key routing
+		if e.termFocused && e.term != nil && e.term.IsRunning() {
+			if key.Matches(msg, e.keys.ToggleTerminal) {
+				return e.toggleTerminal()
+			}
+			switch msg.String() {
+			case "enter":
+				e.term.Write(e.term.input)
+				e.term.input = ""
+				return e, nil
+			case "backspace":
+				if len(e.term.input) > 0 {
+					e.term.input = e.term.input[:len(e.term.input)-1]
+				}
+				return e, nil
+			case "ctrl+c":
+				e.term.Write("\x03")
+				return e, nil
+			case "ctrl+d":
+				e.term.Write("\x04")
+				return e, nil
+			case "ctrl+z":
+				e.term.Write("\x1a")
+				return e, nil
+			case "up":
+				e.term.ScrollUp(1)
+				return e, nil
+			case "down":
+				e.term.ScrollDown(1)
+				return e, nil
+			case "pgup":
+				e.term.ScrollUp(e.termHeight)
+				return e, nil
+			case "pgdown":
+				e.term.ScrollDown(e.termHeight)
+				return e, nil
+			default:
+				if len(msg.String()) == 1 && msg.String()[0] >= 32 {
+					e.term.input += msg.String()
+					return e, nil
+				}
+			}
+		}
+
 		switch {
 		case key.Matches(msg, e.keys.Quit):
 			for i, t := range e.tabs {
@@ -642,10 +696,16 @@ func (e *Editor) updateNormal(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			e.saveSession()
+			if e.term != nil {
+				e.term.Stop()
+			}
 			return e, tea.Quit
 
 		case key.Matches(msg, e.keys.ForceQuit):
 			e.saveSession()
+			if e.term != nil {
+				e.term.Stop()
+			}
 			return e, tea.Quit
 
 		case key.Matches(msg, e.keys.ShowKeybindings):
@@ -753,18 +813,7 @@ func (e *Editor) updateNormal(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return e, nil
 
 		case key.Matches(msg, e.keys.ToggleTerminal):
-			cmdStr := e.keyBindCfg.TerminalCmd
-			if cmdStr == "" {
-				if runtime.GOOS == "windows" {
-					cmdStr = "cmd"
-				} else {
-					cmdStr = "bash"
-				}
-			}
-			c := exec.Command(cmdStr)
-			return e, tea.ExecProcess(c, func(err error) tea.Msg {
-				return nil
-			})
+			return e.toggleTerminal()
 
 		case key.Matches(msg, e.keys.ZoomIn):
 			e.zoomLevel++
@@ -1225,10 +1274,10 @@ func (e *Editor) moveWordLeft() {
 	if col > len(runes) {
 		col = len(runes)
 	}
-	for col > 0 && unicode.IsSpace(runes[col-1]) {
+	for col > 0 && !buffer.IsWordChar(runes[col-1]) {
 		col--
 	}
-	for col > 0 && !unicode.IsSpace(runes[col-1]) {
+	for col > 0 && buffer.IsWordChar(runes[col-1]) {
 		col--
 	}
 	tab.CursorCol = col
@@ -1247,10 +1296,10 @@ func (e *Editor) moveWordRight() {
 		e.ensureCursorVisible()
 		return
 	}
-	for col < len(runes) && !unicode.IsSpace(runes[col]) {
+	for col < len(runes) && buffer.IsWordChar(runes[col]) {
 		col++
 	}
-	for col < len(runes) && unicode.IsSpace(runes[col]) {
+	for col < len(runes) && !buffer.IsWordChar(runes[col]) {
 		col++
 	}
 	tab.CursorCol = col
@@ -1334,7 +1383,43 @@ func (e *Editor) editorWidth() int {
 }
 
 func (e *Editor) editorHeight() int {
-	return e.height - e.tabBarHeight - e.statusHeight
+	h := e.height - e.tabBarHeight - e.statusHeight
+	if e.termVisible {
+		h -= e.termHeight
+	}
+	if h < 5 {
+		h = 5
+	}
+	return h
+}
+
+func (e *Editor) toggleTerminal() (*Editor, tea.Cmd) {
+	if !e.termVisible {
+		e.termVisible = true
+		e.termFocused = true
+		if e.term == nil {
+			shell := e.keyBindCfg.TerminalCmd
+			if shell == "" {
+				if runtime.GOOS == "windows" {
+					shell = "cmd"
+				} else {
+					shell = "bash"
+				}
+			}
+			e.term = NewTerminal(shell)
+			if err := e.term.Start(); err != nil {
+				e.showMessage("Terminal error: " + err.Error())
+				e.termVisible = false
+				e.termFocused = false
+				return e, nil
+			}
+		}
+	} else if e.termFocused {
+		e.termFocused = false
+	} else {
+		e.termVisible = false
+	}
+	return e, nil
 }
 
 func (e *Editor) handleSave() (tea.Model, tea.Cmd) {
@@ -2149,18 +2234,7 @@ func (e *Editor) executeCommand(action string) (tea.Model, tea.Cmd) {
 		return e, nil
 
 	case "terminal":
-		cmdStr := e.keyBindCfg.TerminalCmd
-		if cmdStr == "" {
-			if runtime.GOOS == "windows" {
-				cmdStr = "cmd"
-			} else {
-				cmdStr = "bash"
-			}
-		}
-		c := exec.Command(cmdStr)
-		return e, tea.ExecProcess(c, func(err error) tea.Msg {
-			return nil
-		})
+		return e.toggleTerminal()
 
 	default:
 		return e, nil
