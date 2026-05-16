@@ -182,6 +182,40 @@ These apply when you open a special view/overlay.
   - `up` / `down`
   - additional list navigation is also available via paging/home/end keys
 
+## Settings UI Overlay
+- `esc`: close / back to normal mode
+- `up` / `k`: scroll up through settings
+- `down` / `j`: scroll down through settings
+- `o`: open `config.json` in editor for direct editing
+- `r`: reload config from disk (apply changes immediately)
+
+Settings shown:
+- **Editor**: Tab Size, Relative Line Numbers, Auto Save Interval, Minimap, Word Wrap
+- **Theme**: Current Theme name
+- **Behavior**: Terminal command, LSP enabled, Session Save
+
+---
+
+## Custom Themes
+
+Drop JSON theme files into `~/.panda-editor/themes/`:
+
+```json
+{
+  "name": "My Theme",
+  "bg": "#1e1e2e",
+  "fg": "#cdd6f4",
+  "accent": "#7aa2f7",
+  "comment": "#565f89",
+  "keyword": "#bb9af7",
+  "string": "#9ece6a"
+}
+```
+
+Set active theme in `config.json`: `"theme": "My Theme"`
+
+---
+
 ## Open Folder Overlay
 - `esc`: cancel / back to normal mode
 - `enter`: open folder at entered path

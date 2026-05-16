@@ -13,6 +13,7 @@ Panda Editor is a blazingly fast, modern Terminal User Interface (TUI) text edit
 - **Minimap**: A bird's-eye code view for quick navigation in large files.
 - **File Icons**: Language-specific Unicode icons in the tab bar for quick visual identification.
 - **File Tree Scrollbar**: Visual scroll indicator when the file list exceeds the viewport.
+- **Deep Customization**: Full editor customization via `~/.panda-editor/config.json` — themes, editor settings, per-language LSP config, and keybindings all in one place. Supported by a Settings UI overlay (`Ctrl+,`) and custom theme files (`~/.panda-editor/themes/*.json`).
 - **AI-Ready Workflow (Bundler)**:
   - **Multi-Select Explorer**: Mark files with `<kbd>Space</kbd>` to include them in an AI context bundle.
   - **Multiple Formats**: Export bundles as **Markdown**, **XML**, or **Plain Text**.
@@ -81,6 +82,8 @@ Then move `panda.exe` (or `panda` on Linux/macOS) to a directory in your system'
 | **New Tab** | `Ctrl+N` |
 | **Next Tab** | `Ctrl+Tab` |
 | **Toggle Theme** | `Ctrl+T` |
+| **Settings UI** | `Ctrl+,` |
+| **Reload Config** | via Command Palette |
 | **Toggle Terminal** | `Ctrl+J` |
 | **Show Help** | `F1` |
 | **Quit** | `Ctrl+Q` |
@@ -96,6 +99,34 @@ Then move `panda.exe` (or `panda` on Linux/macOS) to a directory in your system'
 - `d`: Delete
 - `t`: Toggle Token Display
 - `B`: Cycle Bundle Format (Markdown -> XML -> Text)
+
+## ⚙️ Customization
+
+Panda Editor is built around a **unified config file** at `~/.panda-editor/config.json`:
+
+```json
+{
+  "editor": {
+    "tab_size": 4,
+    "relative_line_numbers": false,
+    "minimap": true
+  },
+  "theme": "Panda Dark",
+  "custom_colors": { "accent": "#ff0000" },
+  "languages": {
+    "go": { "lsp": "gopls", "tab_size": 4, "format_on_save": true }
+  },
+  "keybindings": { "save": ["ctrl+s"] },
+  "behavior": { "terminal_cmd": "cmd", "lsp_enabled": true }
+}
+```
+
+Three ways to customize:
+1. **Settings UI** — Press `Ctrl+,` or use Command Palette → "Settings UI"
+2. **Direct edit** — Command Palette → "Open Config" edits `config.json` in-editor
+3. **Custom themes** — Place `.json` theme files in `~/.panda-editor/themes/`
+
+See `guide.md` for detailed customization instructions.
 
 ## 🛠️ Architecture
 

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/Aswanidev-vs/panda-editor/internal/config"
 	"github.com/Aswanidev-vs/panda-editor/internal/highlight"
 	"github.com/Aswanidev-vs/panda-editor/internal/lsp"
 	"github.com/Aswanidev-vs/panda-editor/internal/theme"
@@ -70,6 +71,8 @@ func (e *Editor) View() string {
 		result = e.renderGlobalSearchOverlay(result)
 	case ViewUnsavedPrompt:
 		result = e.renderUnsavedPrompt(result)
+	case ViewSettings:
+		result = e.renderSettingsOverlay(result)
 	}
 
 	// Render autocomplete if active
@@ -335,7 +338,15 @@ func (e *Editor) renderPanel(tabIdx int, width int) string {
 
 		// Line number
 		var lineNumStr string
-		lineNumStr = fmt.Sprintf("%*d ", e.lineNumberWidth-1, lineNum+1)
+		if e.relativeLineNo && lineNum != tab.CursorLine {
+			dist := lineNum - tab.CursorLine
+			if dist < 0 {
+				dist = -dist
+			}
+			lineNumStr = fmt.Sprintf("%*d ", e.lineNumberWidth-1, dist)
+		} else {
+			lineNumStr = fmt.Sprintf("%*d ", e.lineNumberWidth-1, lineNum+1)
+		}
 
 		var lineNumStyle lipgloss.Style
 		if isCursorLine && isActive {
@@ -1985,4 +1996,57 @@ func (e *Editor) renderMinimap() string {
 		Border(lipgloss.NormalBorder(), false, false, false, true).
 		BorderForeground(t.Border).
 		Render(sb.String())
+}
+
+func (e *Editor) renderSettingsOverlay(bg string) string {
+	t := theme.CurrentTheme
+
+	// Build settings display lines
+	var items []string
+
+	items = append(items, lipgloss.NewStyle().Foreground(t.Accent).Bold(true).Render("── Editor ──"))
+	items = append(items, fmt.Sprintf("  Tab Size:             %d", e.config.Editor.TabSize))
+	items = append(items, fmt.Sprintf("  Relative Line Nums:  %v", e.relativeLineNo))
+	items = append(items, fmt.Sprintf("  Auto Save Interval:  %d sec", e.config.Editor.AutoSaveInterval))
+	minimap := "OFF"
+	if e.config.Editor.Minimap != nil && *e.config.Editor.Minimap {
+		minimap = "ON"
+	}
+	items = append(items, fmt.Sprintf("  Minimap:              %s", minimap))
+	items = append(items, fmt.Sprintf("  Word Wrap:            %v", e.config.Editor.WordWrap))
+
+	items = append(items, "")
+	items = append(items, lipgloss.NewStyle().Foreground(t.Accent).Bold(true).Render("── Theme ──"))
+	items = append(items, fmt.Sprintf("  Current Theme:  %s", e.config.Theme))
+
+	lspEnabled := "YES"
+	if !config.BoolVal(e.config.Behavior.LSPEnabled, true) {
+		lspEnabled = "NO"
+	}
+	items = append(items, "")
+	items = append(items, lipgloss.NewStyle().Foreground(t.Accent).Bold(true).Render("── Behavior ──"))
+	items = append(items, fmt.Sprintf("  Terminal:       %s", e.config.Behavior.TerminalCmd))
+	items = append(items, fmt.Sprintf("  LSP Enabled:    %s", lspEnabled))
+	items = append(items, fmt.Sprintf("  Session Save:   %v", config.BoolVal(e.config.Behavior.SessionSave, true)))
+
+	items = append(items, "")
+	items = append(items, lipgloss.NewStyle().Foreground(t.Comment).Italic(true).Render("  Press 'o' to open config file"))
+	items = append(items, lipgloss.NewStyle().Foreground(t.Comment).Italic(true).Render("  Press 'r' to reload config"))
+	items = append(items, lipgloss.NewStyle().Foreground(t.Comment).Italic(true).Render("  Press esc to close"))
+
+	// Render the overlay
+
+	var sb strings.Builder
+	sb.WriteString(lipgloss.NewStyle().
+		Background(t.OverlayBg).
+		Foreground(t.Fg).
+		Width(50).
+		Padding(1, 2).
+		Render(strings.Join(items, "\n")))
+
+	overlay := sb.String()
+
+	oW := lipgloss.Width(overlay)
+	oH := lipgloss.Height(overlay)
+	return placeOverlay(e.width/2-oW/2, e.height/2-oH/2, overlay, bg)
 }

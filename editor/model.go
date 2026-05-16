@@ -49,6 +49,7 @@ const (
 	ViewGlobalSearch
 	ViewUnsavedPrompt
 	ViewFileTreeFilter
+	ViewSettings
 )
 
 type ActionType int
@@ -179,7 +180,9 @@ type Editor struct {
 	activePanel   int // 0: left, 1: right
 	rightTab      int // index of tab in right panel
 	bundleFormat  int // 0: Markdown, 1: XML, 2: Plain Text
-	sessionInfo   string
+	sessionInfo      string
+	relativeLineNo   bool
+	settingsScroll   int
 }
 
 type Cursor struct {
@@ -300,17 +303,38 @@ func NewEditor() Editor {
 	e.kbEntries = e.keyBindCfg.GetKeyBindEntries()
 	e.buildFileList()
 
-	// Try to start gopls if available
-	_, err := exec.LookPath("gopls")
+	// Try to start LSP servers if enabled
+	if config.BoolVal(cfg.Behavior.LSPEnabled, true) {
+		e.startLSPServers()
+	}
+
+	// Start background file watcher
+	fw, err := watcher.New(func(path string) {
+		e.fileChangeChan <- path
+	})
 	if err == nil {
-		client, err := lsp.NewClient("gopls", nil, func(method string, params json.RawMessage) {
+		e.fileWatcher = fw
+	}
+
+	// Apply config (theme, relative line numbers, etc.)
+	e.applyConfig()
+
+	return e
+}
+
+func (e *Editor) startLSPServers() {
+	for lang, pl := range e.config.Lang {
+		if pl.LSP == "" {
+			continue
+		}
+		serverPath := pl.LSP
+		client, err := lsp.NewClient(serverPath, nil, func(method string, params json.RawMessage) {
 			if method == "textDocument/publishDiagnostics" {
 				var result struct {
 					Uri         string           `json:"uri"`
 					Diagnostics []lsp.Diagnostic `json:"diagnostics"`
 				}
 				if err := json.Unmarshal(params, &result); err == nil {
-					// Convert file:/// path to absolute path
 					path := strings.TrimPrefix(result.Uri, "file:///")
 					if runtime.GOOS == "windows" {
 						path = filepath.FromSlash(path)
@@ -322,23 +346,50 @@ func NewEditor() Editor {
 		if err == nil {
 			err = client.Initialize(e.fileTreeRoot)
 			if err == nil {
-				e.lspClients["go"] = client
+				e.lspClients[lang] = client
 			}
 		}
-	} else {
-		// Just a log or simple message, we can't showMessage yet as TUI isn't running
-		fmt.Printf("gopls not found, Go LSP disabled\n")
 	}
+}
 
-	// Start background file watcher
-	fw, err := watcher.New(func(path string) {
-		e.fileChangeChan <- path
-	})
+// applyConfig applies the current config to editor state.
+func (e *Editor) applyConfig() {
+	// Apply theme
+	cfg := e.config
+	var selectedTheme theme.Theme
+	switch cfg.Theme {
+	case "Panda Dark":
+		selectedTheme = theme.Dark
+	case "Panda Light":
+		selectedTheme = theme.Light
+	default:
+		selectedTheme = theme.Dark
+		// Try loading from user themes dir
+		for _, p := range theme.ListUserThemes() {
+			t, err := theme.LoadThemeFromFile(p)
+			if err == nil && t.Name == cfg.Theme {
+				selectedTheme = t
+				break
+			}
+		}
+	}
+	if len(cfg.Colors) > 0 {
+		selectedTheme = theme.MergeColors(selectedTheme, cfg.Colors)
+	}
+	theme.SetTheme(selectedTheme)
+
+	// Apply relative line numbers
+	e.relativeLineNo = cfg.Editor.RelativeLineNumbers
+
+}
+
+// reloadConfig reloads the config file and applies changes.
+func (e *Editor) reloadConfig() {
+	cfg, err := config.LoadConfig()
 	if err == nil {
-		e.fileWatcher = fw
+		e.config = cfg
+		e.applyConfig()
 	}
-
-	return e
 }
 
 func (e *Editor) buildFileList() {
@@ -548,6 +599,8 @@ func (e *Editor) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return e.updateGlobalSearch(msg)
 	case ViewFileTreeFilter:
 		return e.updateFileTreeFilter(msg)
+	case ViewSettings:
+		return e.updateSettings(msg)
 	}
 
 	result, cmd := e.updateNormal(msg)
@@ -2017,18 +2070,38 @@ func (e *Editor) executeCommand(action string) (tea.Model, tea.Cmd) {
 		e.showHelp = true
 		return e, nil
 
-	case "open_settings":
+	case "open_config":
 		home, _ := os.UserHomeDir()
-		path := filepath.Join(home, ".panda-editor", "settings.json")
+		path := filepath.Join(home, ".panda-editor", "config.json")
 		buf, err := buffer.Open(path)
 		if err != nil {
-			// If file doesn't exist, config.SaveConfig will create it
-			config.SaveConfig(config.DefaultConfig())
+			config.MigrateFromOld()
 			buf, _ = buffer.Open(path)
 		}
 		e.tabs = append(e.tabs, Tab{Buf: buf})
 		e.activeTab = len(e.tabs) - 1
 		e.mode = ViewNormal
+		return e, nil
+
+	case "settings_ui":
+		e.mode = ViewSettings
+		e.settingsScroll = 0
+		return e, nil
+
+	case "reload_config":
+		e.reloadConfig()
+		e.showMessage("Config reloaded")
+		return e, nil
+
+	case "open_config_folder":
+		home, _ := os.UserHomeDir()
+		dir := filepath.Join(home, ".panda-editor")
+		e.fileTreeRoot = dir
+		e.fileTree = NewFileTree(dir)
+		e.buildFileList()
+		e.fileTreeVisible = true
+		e.mode = ViewNormal
+		e.showMessage("Opened config folder")
 		return e, nil
 
 	case "open_keybindings_config":
@@ -3060,6 +3133,43 @@ func (e *Editor) updateGlobalSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	e.globalSearchInput, cmd = e.globalSearchInput.Update(msg)
 	return e, cmd
+}
+
+func (e *Editor) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "esc":
+			e.mode = ViewNormal
+			return e, nil
+		case "up", "k":
+			if e.settingsScroll > 0 {
+				e.settingsScroll--
+			}
+			return e, nil
+		case "down", "j":
+			e.settingsScroll++
+			return e, nil
+		case "o":
+			// Open config file
+			home, _ := os.UserHomeDir()
+			path := filepath.Join(home, ".panda-editor", "config.json")
+			buf, err := buffer.Open(path)
+			if err == nil {
+				e.tabs = append(e.tabs, Tab{Buf: buf})
+				e.activeTab = len(e.tabs) - 1
+				e.mode = ViewNormal
+			} else {
+				e.showMessage("Config file not found — create one from settings")
+			}
+			return e, nil
+		case "r":
+			e.reloadConfig()
+			e.showMessage("Config reloaded")
+			return e, nil
+		}
+	}
+	return e, nil
 }
 
 func (e *Editor) triggerGlobalSearch() {
