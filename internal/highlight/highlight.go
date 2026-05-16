@@ -198,7 +198,26 @@ var (
 	numberRe = regexp.MustCompile(`\b(0x[0-9a-fA-F]+|0b[01]+|0o[0-7]+|\d+\.?\d*([eE][+-]?\d+)?i?|0[Xx][0-9a-fA-F]+)\b`)
 )
 
-func HighlightLine(line, language string, _ bool) ([]Span, bool) {
+func tokeniseWithChroma(lexer chroma.Lexer, line string) []Span {
+	iter, err := lexer.Tokenise(nil, line)
+	if err != nil {
+		return []Span{{Text: line, Token: TokenNormal}}
+	}
+	var spans []Span
+	for token := iter(); token != chroma.EOF; token = iter() {
+		text := token.String()
+		if text == "" {
+			continue
+		}
+		spans = append(spans, Span{Text: text, Token: tokenTypeToToken(token.Type)})
+	}
+	if len(spans) == 0 {
+		return []Span{{Text: line, Token: TokenNormal}}
+	}
+	return spans
+}
+
+func HighlightLine(line, language string, inBlockComment bool) ([]Span, bool) {
 	if language == "text" || language == "markdown" || language == "" {
 		return []Span{{Text: line, Token: TokenNormal}}, false
 	}
@@ -208,28 +227,36 @@ func HighlightLine(line, language string, _ bool) ([]Span, bool) {
 		return []Span{{Text: line, Token: TokenNormal}}, false
 	}
 
-	iter, err := lexer.Tokenise(nil, line)
-	if err != nil {
-		return []Span{{Text: line, Token: TokenNormal}}, false
-	}
+	startDelim := blockCommentStart[language]
+	endDelim := blockCommentEnd[language]
 
-	var spans []Span
-	for token := iter(); token != chroma.EOF; token = iter() {
-		tokType := token.Type
-		text := token.String()
-		if text == "" {
-			continue
+	// If continuing a block comment from previous line
+	if inBlockComment && endDelim != "" {
+		idx := strings.Index(line, endDelim)
+		if idx >= 0 {
+			// Closing delimiter found — split into comment + code
+			commentPart := line[:idx+len(endDelim)]
+			codePart := line[idx+len(endDelim):]
+			spans := []Span{{Text: commentPart, Token: TokenComment}}
+			spans = append(spans, tokeniseWithChroma(lexer, codePart)...)
+			return spans, false
 		}
-		spans = append(spans, Span{
-			Text:  text,
-			Token: tokenTypeToToken(tokType),
-		})
+		// Entire line is still inside block comment
+		return []Span{{Text: line, Token: TokenComment}}, true
 	}
 
-	if len(spans) == 0 {
-		return []Span{{Text: line, Token: TokenNormal}}, false
+	spans := tokeniseWithChroma(lexer, line)
+
+	// Detect if line ends with an unclosed block comment
+	stillInComment := false
+	if startDelim != "" && endDelim != "" && len(spans) > 0 {
+		last := spans[len(spans)-1]
+		if last.Token == TokenComment && strings.Contains(last.Text, startDelim) && !strings.Contains(last.Text, endDelim) {
+			stillInComment = true
+		}
 	}
-	return spans, false
+
+	return spans, stillInComment
 }
 
 func lexerForLanguage(language string) chroma.Lexer {

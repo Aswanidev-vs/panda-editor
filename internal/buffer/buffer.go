@@ -287,7 +287,7 @@ func (b *Buffer) GetSelectionText(startLine, startCol, endLine, endCol int) stri
 	sb.WriteString("\n")
 	for i := startLine + 1; i < endLine; i++ {
 		sb.WriteString(b.Lines[i])
-		sb.WriteString("\n	")
+		sb.WriteString("\n")
 	}
 	runes = []rune(b.Lines[endLine])
 	if endCol > len(runes) {

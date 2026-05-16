@@ -179,6 +179,7 @@ type Editor struct {
 	activePanel   int // 0: left, 1: right
 	rightTab      int // index of tab in right panel
 	bundleFormat  int // 0: Markdown, 1: XML, 2: Plain Text
+	sessionInfo   string
 }
 
 type Cursor struct {
@@ -248,6 +249,15 @@ func NewEditor() Editor {
 
 	hasSession := session.SessionExists()
 
+	// Pre-compute session info string once (avoid I/O in View())
+	sessionInfo := ""
+	if hasSession {
+		state, err := session.LoadSession()
+		if err == nil && state.SavedAt != "" {
+			sessionInfo = fmt.Sprintf("💾 Session available (saved %s)", state.SavedAt)
+		}
+	}
+
 	e := Editor{
 		keys:              keys,
 		keyBindCfg:        keyBindCfg,
@@ -270,6 +280,7 @@ func NewEditor() Editor {
 		statusHeight:      1,
 		tabBarHeight:      1,
 		hasSession:        hasSession,
+		sessionInfo:        sessionInfo,
 		sessionTimer:      0,
 		welcomeCursor:     0,
 		fileChangeChan:    make(chan string, 10),
@@ -282,6 +293,7 @@ func NewEditor() Editor {
 		fileDiagnostics:   make(map[string][]lsp.Diagnostic),
 		fileDiffs:         make(map[string]map[int]string),
 		gitBranchTimer:    0,
+		rightTab:          0,
 		config:            cfg,
 	}
 
@@ -460,6 +472,9 @@ func (e *Editor) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		e.animate()
+		if e.messageTimer > 0 {
+			e.messageTimer--
+		}
 		return e, e.tickAnimation()
 
 	case tea.MouseMsg:
@@ -480,6 +495,7 @@ func (e *Editor) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case searcher.SearchProgressMsg:
 		if msg.Done {
 			e.isSearching = false
+			e.searchDoneChan = make(chan bool, 1)
 			return e, e.listenForSearchDone()
 		}
 		e.globalSearchResults = append(e.globalSearchResults, msg.Results...)
@@ -526,10 +542,10 @@ func (e *Editor) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return e.updateOpenFolder(msg)
 	case ViewFileTree:
 		return e.updateFileTree(msg)
-	case ViewGlobalSearch:
-		return e.updateGlobalSearch(msg)
 	case ViewUnsavedPrompt:
 		return e.updateUnsavedPrompt(msg)
+	case ViewGlobalSearch:
+		return e.updateGlobalSearch(msg)
 	case ViewFileTreeFilter:
 		return e.updateFileTreeFilter(msg)
 	}
@@ -720,6 +736,7 @@ func (e *Editor) updateNormal(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return e, nil
 
 		case key.Matches(msg, e.keys.SelectAll):
+			e.pushUndo()
 			tab.SelectActive = true
 			tab.SelectStartL = 0
 			tab.SelectStartC = 0
@@ -728,6 +745,7 @@ func (e *Editor) updateNormal(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return e, nil
 
 		case key.Matches(msg, e.keys.SelectLine):
+			e.pushUndo()
 			tab.SelectActive = true
 			tab.SelectStartL = tab.CursorLine
 			tab.SelectStartC = 0
@@ -810,7 +828,11 @@ func (e *Editor) updateNormal(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return e.handleCopy()
 
 		case key.Matches(msg, e.keys.CopyBundle):
-			e.handleBundle()
+			if !e.fileTreeVisible {
+				e.showMessage("File explorer must be open to bundle files (Ctrl+B)")
+			} else {
+				e.handleBundle()
+			}
 			return e, nil
 
 		case key.Matches(msg, e.keys.Cut):
@@ -1248,6 +1270,13 @@ func (e *Editor) editorWidth() int {
 	if e.fileTreeVisible {
 		w -= (e.fileTree.Width + 1)
 	}
+	if e.splitActive {
+		w = w / 2
+	}
+	w -= 5 // minimap (4 content + 1 border)
+	if w < 20 {
+		w = 20
+	}
 	return w
 }
 
@@ -1284,7 +1313,8 @@ func (e *Editor) handleCloseTab() (tea.Model, tea.Cmd) {
 	
 	if len(e.tabs) == 1 {
 		e.mode = ViewWelcome
-		e.tabs = nil
+		e.tabs = []Tab{{Buf: buffer.New()}}
+		e.activeTab = 0
 		return e, nil
 	}
 	
@@ -1312,7 +1342,9 @@ func (e *Editor) handleCopy() (tea.Model, tea.Cmd) {
 		e.clipboard = e.currentBuf().GetLine(tab.CursorLine)
 		e.showMessage("Line copied")
 	}
-	_ = clipboard.WriteAll(e.clipboard)
+	if err := safeWriteClipboard(e.clipboard); err != nil {
+		e.showMessage(fmt.Sprintf("Clipboard error: %v", err))
+	}
 	return e, nil
 }
 
@@ -1327,7 +1359,9 @@ func (e *Editor) handleCut() (tea.Model, tea.Cmd) {
 		// Delete selected text
 		e.deleteSelection()
 		tab.SelectActive = false
-		_ = clipboard.WriteAll(e.clipboard)
+		if err := safeWriteClipboard(e.clipboard); err != nil {
+			e.showMessage(fmt.Sprintf("Clipboard error: %v", err))
+		}
 		e.showMessage("Cut to clipboard")
 	} else {
 		e.clipboard = e.currentBuf().GetLine(tab.CursorLine)
@@ -1336,7 +1370,9 @@ func (e *Editor) handleCut() (tea.Model, tea.Cmd) {
 			tab.CursorLine = e.currentBuf().LineCount() - 1
 		}
 		tab.CursorCol = 0
-		_ = clipboard.WriteAll(e.clipboard)
+		if err := safeWriteClipboard(e.clipboard); err != nil {
+			e.showMessage(fmt.Sprintf("Clipboard error: %v", err))
+		}
 		e.showMessage("Line cut")
 	}
 	return e, nil
@@ -1385,6 +1421,12 @@ func (e *Editor) handlePaste() (tea.Model, tea.Cmd) {
 	e.pushUndo()
 	tab := e.currentTab()
 	buf := e.currentBuf()
+
+	// Delete active selection before pasting
+	if tab.SelectActive {
+		e.deleteSelection()
+		tab.SelectActive = false
+	}
 
 	// Try OS clipboard first, fall back to internal
 	pasteText := e.clipboard
@@ -1783,7 +1825,7 @@ func (e *Editor) executeCommand(action string) (tea.Model, tea.Cmd) {
 			e.showMessage("Failed to generate bundle: " + err.Error())
 			return e, nil
 		}
-		if err := clipboard.WriteAll(md); err != nil {
+		if err := safeWriteClipboard(md); err != nil {
 			e.showMessage("Failed to write to clipboard: " + err.Error())
 			return e, nil
 		}
@@ -1801,7 +1843,7 @@ func (e *Editor) executeCommand(action string) (tea.Model, tea.Cmd) {
 			e.showMessage("Failed to generate XML bundle: " + err.Error())
 			return e, nil
 		}
-		if err := clipboard.WriteAll(out); err != nil {
+		if err := safeWriteClipboard(out); err != nil {
 			e.showMessage("Failed to write to clipboard: " + err.Error())
 			return e, nil
 		}
@@ -1819,7 +1861,7 @@ func (e *Editor) executeCommand(action string) (tea.Model, tea.Cmd) {
 			e.showMessage("Failed to generate text bundle: " + err.Error())
 			return e, nil
 		}
-		if err := clipboard.WriteAll(out); err != nil {
+		if err := safeWriteClipboard(out); err != nil {
 			e.showMessage("Failed to write to clipboard: " + err.Error())
 			return e, nil
 		}
@@ -2334,6 +2376,7 @@ func (e *Editor) updateHelp(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else if s == "down" || s == "ctrl+n" {
 			e.helpScroll++
 		}
+		e.clampHelpScroll()
 	}
 	return e, nil
 }
@@ -2581,6 +2624,12 @@ func (e *Editor) restoreSession() {
 
 	e.mode = ViewNormal
 	e.showMessage("Session restored from " + state.SavedAt)
+}
+
+func (e *Editor) clampHelpScroll() {
+	if e.helpScroll < 0 {
+		e.helpScroll = 0
+	}
 }
 
 func (e *Editor) getWelcomeActions() []string {
@@ -3014,14 +3063,28 @@ func (e *Editor) updateGlobalSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (e *Editor) triggerGlobalSearch() {
+	if e.isSearching {
+		return
+	}
 	query := e.globalSearchInput.Value()
 	if query == "" {
 		return
 	}
 
+	// Drain stale results from previous search
+	for {
+		select {
+		case <-e.searchResultChan:
+		default:
+			break
+		}
+		break
+	}
+
 	e.globalSearchResults = nil
 	e.isSearching = true
 	e.globalSearchCursor = 0
+	e.searchDoneChan = make(chan bool, 1)
 
 	opts := searcher.Options{
 		Root:          e.fileTreeRoot,
@@ -3100,7 +3163,7 @@ func (e *Editor) getGitDiffs(path string) map[int]string {
 }
 
 func (e *Editor) closeSession() {
-	e.tabs = nil
+	e.tabs = []Tab{{Buf: buffer.New()}}
 	e.activeTab = 0
 	e.mode = ViewWelcome
 	e.showMessage("Session closed")
@@ -3126,11 +3189,12 @@ func (e *Editor) executePendingAction() (tea.Model, tea.Cmd) {
 	case ActionCloseTab:
 		if e.unsavedTabIdx >= 0 && e.unsavedTabIdx < len(e.tabs) {
 			e.tabs = append(e.tabs[:e.unsavedTabIdx], e.tabs[e.unsavedTabIdx+1:]...)
-			if e.activeTab >= len(e.tabs) && len(e.tabs) > 0 {
-				e.activeTab = len(e.tabs) - 1
-			}
 			if len(e.tabs) == 0 {
+				e.tabs = []Tab{{Buf: buffer.New()}}
+				e.activeTab = 0
 				e.mode = ViewWelcome
+			} else if e.activeTab >= len(e.tabs) {
+				e.activeTab = len(e.tabs) - 1
 			}
 		}
 		e.pendingAction = ActionNone
@@ -3249,6 +3313,17 @@ func (e *Editor) acceptSuggestion(suggestion string) {
 	e.suggestions = nil
 }
 
+// safeWriteClipboard wraps clipboard.WriteAll with panic recovery
+// (known issue on Windows with NUL bytes and special characters)
+func safeWriteClipboard(text string) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("clipboard panic: %v", r)
+		}
+	}()
+	return clipboard.WriteAll(text)
+}
+
 func (e *Editor) handleBundle() {
 	paths := e.fileTree.GetSelectedPaths()
 	if len(paths) == 0 {
@@ -3271,7 +3346,7 @@ func (e *Editor) handleBundle() {
 	}
 
 	// Try to copy to system clipboard
-	err = clipboard.WriteAll(bundle)
+	err = safeWriteClipboard(bundle)
 	if err != nil {
 		// Fallback to internal clipboard if system clipboard fails
 		e.clipboard = bundle

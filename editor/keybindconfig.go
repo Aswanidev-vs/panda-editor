@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 type KeyBindConfig struct {
@@ -187,8 +188,15 @@ func DefaultKeyBindConfig() KeyBindConfig {
 		ShowHelp:        []string{"f1"},
 
 		ToggleTerminal:  []string{"ctrl+j"},
-		TerminalCmd:     "bash", // Default terminal, could be cmd or powershell on windows
+		TerminalCmd:     defaultTerminal(),
 	}
+}
+
+func defaultTerminal() string {
+	if runtime.GOOS == "windows" {
+		return "cmd"
+	}
+	return "bash"
 }
 
 func configDir() string {

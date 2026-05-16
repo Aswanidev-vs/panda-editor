@@ -1,6 +1,10 @@
 package lsp
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"net/url"
+	"path/filepath"
+)
 
 // InitializeParams as defined in LSP spec.
 type InitializeParams struct {
@@ -22,11 +26,16 @@ type DidOpenTextDocumentParams struct {
 	TextDocument TextDocumentItem `json:"textDocument"`
 }
 
+func fileURI(path string) string {
+	u := url.URL{Scheme: "file", Path: filepath.ToSlash(path)}
+	return u.String()
+}
+
 func (c *Client) Initialize(rootPath string) error {
 	params := InitializeParams{
 		ProcessID: 0, // Not used by most servers
 		RootPath:  rootPath,
-		RootURI:   "file://" + rootPath,
+		RootURI:   fileURI(rootPath),
 	}
 	_, err := c.Call("initialize", params)
 	if err != nil {
@@ -38,7 +47,7 @@ func (c *Client) Initialize(rootPath string) error {
 func (c *Client) DidOpen(path, languageID, text string) error {
 	params := DidOpenTextDocumentParams{
 		TextDocument: TextDocumentItem{
-			URI:        "file://" + path,
+			URI:        fileURI(path),
 			LanguageID: languageID,
 			Version:    1,
 			Text:       text,

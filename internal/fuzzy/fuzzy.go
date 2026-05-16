@@ -148,7 +148,7 @@ func HighlightMatches(name string, positions []int) string {
 	runes := []rune(name)
 	for i, r := range runes {
 		if posSet[i] {
-			sb.WriteString(string(r))
+			sb.WriteString("\x1b[7m" + string(r) + "\x1b[0m")
 		} else {
 			sb.WriteString(string(r))
 		}

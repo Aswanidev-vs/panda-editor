@@ -7,7 +7,6 @@ import (
 
 	"github.com/Aswanidev-vs/panda-editor/internal/highlight"
 	"github.com/Aswanidev-vs/panda-editor/internal/lsp"
-	"github.com/Aswanidev-vs/panda-editor/internal/session"
 	"github.com/Aswanidev-vs/panda-editor/internal/theme"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -151,29 +150,29 @@ func (e *Editor) renderTabBar() string {
 func getFileIcon(lang string) string {
 	switch lang {
 	case "go":
-		return " "
+		return ""
 	case "python":
-		return " "
+		return ""
 	case "javascript":
-		return " "
+		return ""
 	case "typescript":
-		return " "
+		return ""
 	case "rust":
-		return " "
+		return ""
 	case "java":
-		return " "
+		return ""
 	case "html":
-		return " "
+		return ""
 	case "css", "scss":
-		return " "
+		return ""
 	case "json":
-		return " "
+		return ""
 	case "yaml":
-		return " "
+		return ""
 	case "markdown":
-		return " "
+		return ""
 	case "shell":
-		return " "
+		return ""
 	default:
 		return " "
 	}
@@ -256,14 +255,19 @@ func (e *Editor) renderFileTree() string {
 
 func (e *Editor) renderEditor() string {
 	if e.splitActive {
-		w := e.editorWidth() / 2
+		w := e.editorWidth()
+		// Validate rightTab
+		rightTab := e.rightTab
+		if rightTab < 0 || rightTab >= len(e.tabs) {
+			rightTab = e.activeTab
+		}
 		// Vertical separator
 		sep := lipgloss.NewStyle().
 			Foreground(theme.CurrentTheme.Border).
 			Height(e.editorHeight()).
 			Width(1).
 			Render("│")
-		return lipgloss.JoinHorizontal(lipgloss.Top, e.renderPanel(e.activeTab, w), sep, e.renderPanel(e.rightTab, w-1))
+		return lipgloss.JoinHorizontal(lipgloss.Top, e.renderPanel(e.activeTab, w), sep, e.renderPanel(rightTab, w-1))
 	}
 	return e.renderPanel(e.activeTab, e.editorWidth())
 }
@@ -304,6 +308,9 @@ func (e *Editor) renderPanel(tabIdx int, width int) string {
 			_, inBlockComment = highlight.HighlightLine(buf.GetLine(i), buf.Language, inBlockComment)
 		}
 	}
+
+	absPath, _ := filepath.Abs(buf.FilePath)
+	diags := e.fileDiagnostics[absPath]
 
 	isCursorLine := false
 	for lineNum := startLine; lineNum < endLine; lineNum++ {
@@ -363,9 +370,8 @@ func (e *Editor) renderPanel(tabIdx int, width int) string {
 		sb.WriteString(markerStyle.Render(marker))
 
 		// Gutter separator
-		absPath, _ := filepath.Abs(buf.FilePath)
 		hasDiag := false
-		if diags, ok := e.fileDiagnostics[absPath]; ok {
+		if diags != nil {
 			for _, d := range diags {
 				if d.Range.Start.Line == lineNum {
 					hasDiag = true
@@ -385,7 +391,7 @@ func (e *Editor) renderPanel(tabIdx int, width int) string {
 		// Line content with syntax highlighting and scrolling
 		runes := []rune(lineContent)
 		scrollCol := tab.ScrollCol
-		visibleCols := editorWidth - e.lineNumberWidth - 3
+		visibleCols := editorWidth - e.lineNumberWidth - 2
 		if visibleCols < 5 {
 			visibleCols = 5
 		}
@@ -446,9 +452,7 @@ func (e *Editor) renderPanel(tabIdx int, width int) string {
 		}
 
 		isDiagnostic := func(col int) bool {
-			absPath, _ := filepath.Abs(buf.FilePath)
-			diags, ok := e.fileDiagnostics[absPath]
-			if !ok {
+			if len(diags) == 0 {
 				return false
 			}
 			absCol := col + scrollCol
@@ -470,9 +474,11 @@ func (e *Editor) renderPanel(tabIdx int, width int) string {
 
 		// Syntax highlight the visible portion
 		visibleStr := string(visibleRunes)
-		visibleHighlighted, _ := highlight.HighlightLine(visibleStr, buf.Language, inBlockComment)
+		visibleHighlighted, bcState := highlight.HighlightLine(visibleStr, buf.Language, inBlockComment)
+		inBlockComment = bcState
 
 		charIdx := 0
+		dispWidth := 0
 		for _, span := range visibleHighlighted {
 			style := highlight.TokenToStyle(span.Token)
 			for _, r := range span.Text {
@@ -485,6 +491,7 @@ func (e *Editor) renderPanel(tabIdx int, width int) string {
 					style = style.Foreground(lipgloss.Color("#ff0000")).Underline(true)
 				}
 
+				rw := lipgloss.Width(string(r))
 				// Cursor or Matching Bracket
 				if isActive && lineNum == tab.CursorLine && colIdx+scrollCol == tab.CursorCol {
 					cursorStyle := lipgloss.NewStyle().
@@ -502,6 +509,7 @@ func (e *Editor) renderPanel(tabIdx int, width int) string {
 					sb.WriteString(baseStyle.Copy().Inherit(style).Render(string(r)))
 				}
 				charIdx++
+				dispWidth += rw
 			}
 		}
 
@@ -513,10 +521,11 @@ func (e *Editor) renderPanel(tabIdx int, width int) string {
 				Bold(true)
 			sb.WriteString(cursorStyle.Render(" "))
 			charIdx++
+			dispWidth++
 		}
 
 		// Pad to fill width
-		usedWidth := e.lineNumberWidth + 1 + charIdx
+		usedWidth := e.lineNumberWidth + 2 + dispWidth
 		if usedWidth < editorWidth {
 			sb.WriteString(baseStyle.Copy().Render(strings.Repeat(" ", editorWidth-usedWidth)))
 		}
@@ -528,8 +537,9 @@ func (e *Editor) renderPanel(tabIdx int, width int) string {
 	for lineNum := endLine; lineNum < startLine+editorHeight; lineNum++ {
 		lineNumStr := fmt.Sprintf("%*s ", e.lineNumberWidth-1, "~")
 		sb.WriteString(lipgloss.NewStyle().Foreground(t.Border).Background(t.Bg).Render(lineNumStr))
+		sb.WriteString(lipgloss.NewStyle().Foreground(t.Border).Background(t.Bg).Render(" "))
 		sb.WriteString(lipgloss.NewStyle().Foreground(t.Border).Background(t.Bg).Render("│"))
-		sb.WriteString(lipgloss.NewStyle().Background(t.Bg).Render(strings.Repeat(" ", editorWidth-e.lineNumberWidth-1)))
+		sb.WriteString(lipgloss.NewStyle().Background(t.Bg).Render(strings.Repeat(" ", editorWidth-e.lineNumberWidth-2)))
 		sb.WriteString("\n")
 	}
 
@@ -631,7 +641,6 @@ func (e *Editor) renderStatusBar() string {
 	// Message toast
 	if len(e.messages) > 0 && e.messageTimer > 0 {
 		rightParts = append(rightParts, e.messages[len(e.messages)-1])
-		e.messageTimer--
 	}
 
 	right := " " + strings.Join(rightParts, "  │  ") + " "
@@ -720,31 +729,38 @@ func (e *Editor) renderFinderOverlay(bg string) string {
 				Padding(0, 1)
 		}
 
-		namePart := lipgloss.NewStyle().Foreground(t.Fg).Bold(true).Render(match.Name)
-		dirPart := ""
-		dir := ""
-		if match.Path != match.Name {
-			dir = filepath.Dir(match.Path)
-			if dir == "." {
-				dir = ""
-			} else {
-				dir = dir + "/"
-			}
-			fullDir := dir
-			if len(dir) > 30 {
-				dir = "..." + dir[len(dir)-27:]
-			}
-			dirPart = lipgloss.NewStyle().Foreground(t.Comment).Render(dir)
-			dir = fullDir // for selection display
+		// Highlight matched characters in filename
+		posSet := make(map[int]bool)
+		for _, p := range match.Positions {
+			posSet[p] = true
 		}
+		var nameSb strings.Builder
+		runes := []rune(match.Name)
+		for i, r := range runes {
+			var chStyle lipgloss.Style
+			if posSet[i] {
+				chStyle = lipgloss.NewStyle().Foreground(t.Accent).Bold(true)
+			} else {
+				chStyle = lipgloss.NewStyle().Foreground(t.Fg)
+			}
+			nameSb.WriteString(chStyle.Render(string(r)))
+		}
+		namePart := nameSb.String()
+		dirStr := ""
+		if match.Path != match.Name {
+			dir := filepath.Dir(match.Path)
+			if dir != "." {
+				dir += "/"
+				if len(dir) > 30 {
+					dir = "..." + dir[len(dir)-27:]
+				}
+				dirStr = dir
+			}
+		}
+		dirPart := lipgloss.NewStyle().Foreground(t.Comment).Render(dirStr)
 
 		content := icon + " " + dirPart + namePart
-		if i == e.finderCursor {
-			content = icon + " " + dir + match.Name
-			sb.WriteString(lineStyle.Render(content))
-		} else {
-			sb.WriteString(lineStyle.Render(content))
-		}
+		sb.WriteString(lineStyle.Render(content))
 		sb.WriteString("\n")
 	}
 
@@ -1402,18 +1418,14 @@ func (e *Editor) renderWelcome() string {
 	sb.WriteString(hintStyle.Render(hints))
 
 	// Session info
-	if e.hasSession {
+	if e.hasSession && e.sessionInfo != "" {
 		sb.WriteString("\n\n")
-		state, err := session.LoadSession()
-		if err == nil && state.SavedAt != "" {
-			info := fmt.Sprintf("💾 Session available (saved %s)", state.SavedAt)
-			infoPad := (e.width - lipgloss.Width(info)) / 2
-			if infoPad < 0 {
-				infoPad = 0
-			}
-			sb.WriteString(strings.Repeat(" ", infoPad))
-			sb.WriteString(lipgloss.NewStyle().Foreground(t.Success).Render(info))
+		infoPad := (e.width - lipgloss.Width(e.sessionInfo)) / 2
+		if infoPad < 0 {
+			infoPad = 0
 		}
+		sb.WriteString(strings.Repeat(" ", infoPad))
+		sb.WriteString(lipgloss.NewStyle().Foreground(t.Success).Render(e.sessionInfo))
 	}
 
 	return bgStyle.Render(sb.String())
@@ -1935,10 +1947,14 @@ func (e *Editor) renderMinimap() string {
 	width := 4
 
 	var sb strings.Builder
+	totalLines := buf.LineCount()
 	for i := 0; i < height; i++ {
-		lineIdx := int(float64(i) / float64(height) * float64(buf.LineCount()))
-		if lineIdx >= buf.LineCount() {
-			lineIdx = buf.LineCount() - 1
+		lineIdx := 0
+		if height > 1 && totalLines > 0 {
+			lineIdx = i * (totalLines - 1) / (height - 1)
+		}
+		if lineIdx >= totalLines {
+			lineIdx = totalLines - 1
 		}
 
 		line := buf.GetLine(lineIdx)
