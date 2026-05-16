@@ -6,11 +6,13 @@ Panda Editor is a blazingly fast, modern Terminal User Interface (TUI) text edit
 
 - **Modern Aesthetic**: A beautiful UI powered by Lipgloss with customizable themes, glassmorphism-inspired overlays, and smooth animations.
 - **Language Intelligence**: 
-  - Syntax highlighting for 20+ languages.
+  - Syntax highlighting for 20+ languages, including **multi-line block comment** (`/* */`) preservation across lines.
   - **LSP Diagnostics**: Integration with `gopls` and other language servers for real-time error reporting (displayed as gutter markers `⊗` and diagnostic hints).
   - **Word-based Autocomplete**: Smart heuristic suggestions as you type.
 - **Split-Pane Editing**: Side-by-side editing for multitasking (`Ctrl+\`).
 - **Minimap**: A bird's-eye code view for quick navigation in large files.
+- **File Icons**: Language-specific Unicode icons in the tab bar for quick visual identification.
+- **File Tree Scrollbar**: Visual scroll indicator when the file list exceeds the viewport.
 - **AI-Ready Workflow (Bundler)**:
   - **Multi-Select Explorer**: Mark files with `<kbd>Space</kbd>` to include them in an AI context bundle.
   - **Multiple Formats**: Export bundles as **Markdown**, **XML**, or **Plain Text**.
@@ -71,7 +73,7 @@ Then move `panda.exe` (or `panda` on Linux/macOS) to a directory in your system'
 | **Open File (Fuzzy)** | `Ctrl+P` |
 | **Save File** | `Ctrl+S` |
 | **Quick Bundle (AI)** | `Ctrl+Shift+C` |
-| **Toggle Sidebar** | `Ctrl+B` |
+| **Focus Sidebar** | `Ctrl+B` |
 | **Split Pane** | `Ctrl+\` |
 | **Global Search** | `Alt+F` |
 | **Search in File** | `Ctrl+F` |

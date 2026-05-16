@@ -5,6 +5,8 @@ This guide lists the **default** keybindings as defined in `editor/keybindconfig
 > Notes:
 > - Some actions have **multiple keys** (e.g. `Ctrl+Left` or `Alt+B`).
 > - Key names follow the same format used by the keybinding editor (e.g. `ctrl+shift+s`, `f3`, `shift+tab`).
+> - **Tab bar** shows language-specific file icons (Go → ``, Python → ``, JS → ``, etc.).
+> - **Multi-line block comments** (`/* */`) are highlighted across lines, not reset per-line.
 
 ---
 
@@ -138,6 +140,7 @@ These apply when you open a special view/overlay.
 - `up` / `ctrl+k`: move selection up
 - `down` / `ctrl+j`: move selection down
 - `ctrl+p` / `ctrl+n`: alternate navigation (as shown by UI)
+- Matched characters in the filename are highlighted in the accent color
   
 ## Command Palette Overlay
 - `esc`: cancel / back to normal mode
@@ -193,3 +196,4 @@ These apply when you open a special view/overlay.
 - `left` / `h`: collapse folder
 - `home`: jump to top
 - `end`: jump to bottom
+- A **scrollbar** (█) appears on the right when files exceed viewport height
