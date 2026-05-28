@@ -240,6 +240,7 @@ func LoadKeyBindConfig() KeyBindConfig {
 	if loaded.MatchingBrace != nil { cfg.MatchingBrace = loaded.MatchingBrace }
 	if loaded.InsertNewline != nil { cfg.InsertNewline = loaded.InsertNewline }
 	if loaded.Backspace != nil { cfg.Backspace = loaded.Backspace }
+	if loaded.DeleteWordLeft != nil { cfg.DeleteWordLeft = loaded.DeleteWordLeft }
 	if loaded.Delete != nil { cfg.Delete = loaded.Delete }
 	if loaded.DeleteLine != nil { cfg.DeleteLine = loaded.DeleteLine }
 	if loaded.DuplicateLine != nil { cfg.DuplicateLine = loaded.DuplicateLine }
@@ -270,6 +271,7 @@ func LoadKeyBindConfig() KeyBindConfig {
 	if loaded.SearchReplace != nil { cfg.SearchReplace = loaded.SearchReplace }
 	if loaded.SearchNext != nil { cfg.SearchNext = loaded.SearchNext }
 	if loaded.SearchPrev != nil { cfg.SearchPrev = loaded.SearchPrev }
+	if loaded.GlobalSearch != nil { cfg.GlobalSearch = loaded.GlobalSearch }
 	if loaded.Undo != nil { cfg.Undo = loaded.Undo }
 	if loaded.Redo != nil { cfg.Redo = loaded.Redo }
 	if loaded.CopyBundle != nil { cfg.CopyBundle = loaded.CopyBundle }

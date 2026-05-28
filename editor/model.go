@@ -2998,14 +2998,14 @@ func (e *Editor) updateFileTree(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "up", "k":
 			if e.fileTree.Cursor > 0 {
 				e.fileTree.Cursor--
-				e.fileTree.AdjustScroll(e.editorHeight())
+				e.fileTree.AdjustScroll(e.editorHeight() - 2)
 			}
 			return e, nil
 
 		case "down", "j":
 			if e.fileTree.Cursor < len(e.fileTree.Flat)-1 {
 				e.fileTree.Cursor++
-				e.fileTree.AdjustScroll(e.editorHeight())
+				e.fileTree.AdjustScroll(e.editorHeight() - 2)
 			}
 			return e, nil
 
@@ -3016,7 +3016,7 @@ func (e *Editor) updateFileTree(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if node.IsDir {
 				e.fileTree.Toggle(e.fileTree.Cursor)
-				e.fileTree.AdjustScroll(e.editorHeight())
+				e.fileTree.AdjustScroll(e.editorHeight() - 2)
 			} else {
 				e.openFile(node.Path)
 				e.mode = ViewNormal
@@ -3027,7 +3027,7 @@ func (e *Editor) updateFileTree(msg tea.Msg) (tea.Model, tea.Cmd) {
 			node := e.fileTree.SelectedNode()
 			if node != nil && node.IsDir && !node.Expanded {
 				e.fileTree.Toggle(e.fileTree.Cursor)
-				e.fileTree.AdjustScroll(e.editorHeight())
+				e.fileTree.AdjustScroll(e.editorHeight() - 2)
 			}
 			return e, nil
 
@@ -3035,25 +3035,27 @@ func (e *Editor) updateFileTree(msg tea.Msg) (tea.Model, tea.Cmd) {
 			node := e.fileTree.SelectedNode()
 			if node != nil && node.IsDir && node.Expanded {
 				e.fileTree.Toggle(e.fileTree.Cursor)
-				e.fileTree.AdjustScroll(e.editorHeight())
+				e.fileTree.AdjustScroll(e.editorHeight() - 2)
 			}
 			return e, nil
 		case "home":
-			e.fileTree.Cursor = 0
-			e.fileTree.AdjustScroll(e.editorHeight())
+			if len(e.fileTree.Flat) > 0 {
+				e.fileTree.Cursor = 0
+				e.fileTree.AdjustScroll(e.editorHeight() - 2)
+			}
 			return e, nil
 
 		case "end":
 			if len(e.fileTree.Flat) > 0 {
 				e.fileTree.Cursor = len(e.fileTree.Flat) - 1
-				e.fileTree.AdjustScroll(e.editorHeight())
+				e.fileTree.AdjustScroll(e.editorHeight() - 2)
 			}
 			return e, nil
 
 		// Phase 10: Expand/Collapse all
 		case "e":
 			e.fileTree.ToggleExpandAll()
-			e.fileTree.AdjustScroll(e.editorHeight())
+			e.fileTree.AdjustScroll(e.editorHeight() - 2)
 			return e, nil
 
 		// Phase 9: Toggle per-file token display
@@ -3160,6 +3162,7 @@ func (e *Editor) updateGlobalSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "esc":
 			e.mode = ViewNormal
+			e.isSearching = false
 			e.globalSearchInput.Blur()
 			return e, nil
 		case "enter":
@@ -3256,13 +3259,8 @@ func (e *Editor) triggerGlobalSearch() {
 	}
 
 	// Drain stale results from previous search
-	for {
-		select {
-		case <-e.searchResultChan:
-		default:
-			break
-		}
-		break
+	for len(e.searchResultChan) > 0 {
+		<-e.searchResultChan
 	}
 
 	e.globalSearchResults = nil

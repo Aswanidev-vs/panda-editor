@@ -107,7 +107,53 @@ func fileIcon(name string, isDir bool) string {
 	if isDir {
 		return "📂"
 	}
-	return "📄"
+	ext := strings.ToLower(filepath.Ext(name))
+	switch ext {
+	case ".go":
+		return "🟦"
+	case ".js", ".jsx", ".mjs":
+		return "🟨"
+	case ".ts", ".tsx":
+		return "🔷"
+	case ".py":
+		return "🐍"
+	case ".rs":
+		return "🦀"
+	case ".java":
+		return "☕"
+	case ".c", ".h":
+		return "🔧"
+	case ".cpp", ".hpp", ".cc":
+		return "🔧"
+	case ".html", ".htm":
+		return "🌐"
+	case ".css", ".scss", ".less":
+		return "🎨"
+	case ".json":
+		return "📋"
+	case ".yaml", ".yml":
+		return "⚙️"
+	case ".md", ".markdown":
+		return "📝"
+	case ".txt":
+		return "📄"
+	case ".sh", ".bash", ".zsh":
+		return "💻"
+	case ".xml":
+		return "📰"
+	case ".sql":
+		return "🗃️"
+	case ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico":
+		return "🖼️"
+	case ".lock":
+		return "🔒"
+	case ".toml":
+		return "📦"
+	case ".mod", ".sum":
+		return "📦"
+	default:
+		return "📄"
+	}
 }
 
 func dirIcon(expanded bool) string {
@@ -278,8 +324,10 @@ func (ft *FileTree) toggleInTree(node *FileNode, path string) bool {
 		node.Expanded = !node.Expanded
 		if node.Expanded && len(node.Children) == 0 {
 			// Lazy-load children using gitignore rules
+			wasSelected := node.Selected
 			*node = buildTreeWithRules(path, node.Depth, node.Depth+3, ft.gitignoreRules)
 			node.Expanded = true
+			node.Selected = wasSelected
 		}
 		return true
 	}
@@ -446,9 +494,14 @@ func (ft *FileTree) Render(visibleHeight int) string {
 		}
 
 		// Truncate name if too long
-		maxNameLen := ft.Width - len([]rune(indent)) - len([]rune(checkbox)) - 5
+		indentWidth := lipgloss.Width(indent)
+		checkboxWidth := lipgloss.Width(checkbox)
+		iconWidth := lipgloss.Width(icon)
+		maxNameLen := ft.Width - indentWidth - checkboxWidth - iconWidth - 2
 		displayName := node.Name
-		if maxNameLen > 0 && len(displayName) > maxNameLen {
+		if maxNameLen <= 0 {
+			displayName = "…"
+		} else if len(displayName) > maxNameLen {
 			displayName = displayName[:maxNameLen-1] + "…"
 		}
 
@@ -546,8 +599,10 @@ func (ft *FileTree) setExpandRecursive(node *FileNode, state bool) {
 		node.Expanded = state
 		if state && len(node.Children) == 0 {
 			// Lazy-load children
+			wasSelected := node.Selected
 			*node = buildTreeWithRules(node.Path, node.Depth, node.Depth+3, ft.gitignoreRules)
 			node.Expanded = true
+			node.Selected = wasSelected
 		}
 	}
 	for i := range node.Children {

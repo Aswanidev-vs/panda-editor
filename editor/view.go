@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/Aswanidev-vs/panda-editor/internal/config"
 	"github.com/Aswanidev-vs/panda-editor/internal/highlight"
@@ -88,10 +89,11 @@ func (e *Editor) View() string {
 
 	// Render diagnostic hint if cursor is on an error
 	if e.mode == ViewNormal {
-		tab := e.currentTab()
-		diag := e.getDiagnosticAt(tab.Buf.FilePath, tab.CursorLine, tab.CursorCol)
-		if diag != nil {
-			result = e.renderDiagnosticHint(result, diag)
+		if tab := e.currentTab(); tab != nil {
+			diag := e.getDiagnosticAt(tab.Buf.FilePath, tab.CursorLine, tab.CursorCol)
+			if diag != nil {
+				result = e.renderDiagnosticHint(result, diag)
+			}
 		}
 	}
 
@@ -292,9 +294,9 @@ func (e *Editor) renderPanel(tabIdx int, width int) string {
 	editorWidth := width
 	editorHeight := e.editorHeight()
 
-	e.lineNumberWidth = len(fmt.Sprintf("%d", buf.LineCount())) + 1
-	if e.lineNumberWidth < 4 {
-		e.lineNumberWidth = 4
+	lineNumberWidth := len(fmt.Sprintf("%d", buf.LineCount())) + 1
+	if lineNumberWidth < 4 {
+		lineNumberWidth = 4
 	}
 
 	var sb strings.Builder
@@ -349,9 +351,9 @@ func (e *Editor) renderPanel(tabIdx int, width int) string {
 			if dist < 0 {
 				dist = -dist
 			}
-			lineNumStr = fmt.Sprintf("%*d ", e.lineNumberWidth-1, dist)
+			lineNumStr = fmt.Sprintf("%*d ", lineNumberWidth-1, dist)
 		} else {
-			lineNumStr = fmt.Sprintf("%*d ", e.lineNumberWidth-1, lineNum+1)
+			lineNumStr = fmt.Sprintf("%*d ", lineNumberWidth-1, lineNum+1)
 		}
 
 		var lineNumStyle lipgloss.Style
@@ -359,11 +361,11 @@ func (e *Editor) renderPanel(tabIdx int, width int) string {
 			lineNumStyle = baseStyle.Copy().
 				Foreground(t.LineNumActive).
 				Bold(true).
-				Width(e.lineNumberWidth)
+				Width(lineNumberWidth)
 		} else {
 			lineNumStyle = baseStyle.Copy().
 				Foreground(t.LineNum).
-				Width(e.lineNumberWidth)
+				Width(lineNumberWidth)
 		}
 
 		sb.WriteString(lineNumStyle.Render(lineNumStr))
@@ -378,11 +380,11 @@ func (e *Editor) renderPanel(tabIdx int, width int) string {
 		markerStyle := baseStyle.Copy()
 		switch marker {
 		case "+":
-			markerStyle = markerStyle.Foreground(lipgloss.Color("#00ff00"))
+			markerStyle = markerStyle.Foreground(t.Success)
 		case "~":
-			markerStyle = markerStyle.Foreground(lipgloss.Color("#ffff00"))
+			markerStyle = markerStyle.Foreground(t.Warning)
 		case "-":
-			markerStyle = markerStyle.Foreground(lipgloss.Color("#ff0000"))
+			markerStyle = markerStyle.Foreground(t.Error)
 		}
 		sb.WriteString(markerStyle.Render(marker))
 
@@ -398,7 +400,7 @@ func (e *Editor) renderPanel(tabIdx int, width int) string {
 		}
 
 		if hasDiag {
-			sb.WriteString(baseStyle.Copy().Foreground(lipgloss.Color("#ff0000")).Render("⊗"))
+			sb.WriteString(baseStyle.Copy().Foreground(t.Error).Render("⊗"))
 		} else if isCursorLine && isActive {
 			sb.WriteString(baseStyle.Copy().Foreground(t.Accent).Render("│"))
 		} else {
@@ -408,7 +410,7 @@ func (e *Editor) renderPanel(tabIdx int, width int) string {
 		// Line content with syntax highlighting and scrolling
 		runes := []rune(lineContent)
 		scrollCol := tab.ScrollCol
-		visibleCols := editorWidth - e.lineNumberWidth - 2
+		visibleCols := editorWidth - lineNumberWidth - 2
 		if visibleCols < 5 {
 			visibleCols = 5
 		}
@@ -460,7 +462,7 @@ func (e *Editor) renderPanel(tabIdx int, width int) string {
 					return false
 				}
 				absStart := idx + pos
-				absEnd := absStart + len(q)
+				absEnd := absStart + utf8.RuneCountInString(q)
 				if absCol >= absStart && absCol < absEnd {
 					return true
 				}
@@ -505,7 +507,7 @@ func (e *Editor) renderPanel(tabIdx int, width int) string {
 				} else if isSearchMatch(colIdx) {
 					style = lipgloss.NewStyle().Background(t.Accent).Foreground(t.Bg)
 				} else if isDiagnostic(colIdx) {
-					style = style.Foreground(lipgloss.Color("#ff0000")).Underline(true)
+					style = style.Foreground(t.Error).Underline(true)
 				}
 
 				rw := lipgloss.Width(string(r))
@@ -531,7 +533,7 @@ func (e *Editor) renderPanel(tabIdx int, width int) string {
 		}
 
 		// Cursor at end of line
-		if isActive && lineNum == tab.CursorLine && tab.CursorCol >= len(runes) && len(runes) >= scrollCol && len(runes) < endCol {
+		if isActive && lineNum == tab.CursorLine && tab.CursorCol >= len(runes) && len(runes) >= scrollCol {
 			cursorStyle := lipgloss.NewStyle().
 				Background(t.Cursor).
 				Foreground(t.Bg).
@@ -542,7 +544,7 @@ func (e *Editor) renderPanel(tabIdx int, width int) string {
 		}
 
 		// Pad to fill width
-		usedWidth := e.lineNumberWidth + 2 + dispWidth
+		usedWidth := lineNumberWidth + 2 + dispWidth
 		if usedWidth < editorWidth {
 			sb.WriteString(baseStyle.Copy().Render(strings.Repeat(" ", editorWidth-usedWidth)))
 		}
@@ -552,11 +554,11 @@ func (e *Editor) renderPanel(tabIdx int, width int) string {
 
 	// Fill remaining lines with dim tilde
 	for lineNum := endLine; lineNum < startLine+editorHeight; lineNum++ {
-		lineNumStr := fmt.Sprintf("%*s ", e.lineNumberWidth-1, "~")
+		lineNumStr := fmt.Sprintf("%*s ", lineNumberWidth-1, "~")
 		sb.WriteString(lipgloss.NewStyle().Foreground(t.Border).Background(t.Bg).Render(lineNumStr))
 		sb.WriteString(lipgloss.NewStyle().Foreground(t.Border).Background(t.Bg).Render(" "))
 		sb.WriteString(lipgloss.NewStyle().Foreground(t.Border).Background(t.Bg).Render("│"))
-		sb.WriteString(lipgloss.NewStyle().Background(t.Bg).Render(strings.Repeat(" ", editorWidth-e.lineNumberWidth-2)))
+		sb.WriteString(lipgloss.NewStyle().Background(t.Bg).Render(strings.Repeat(" ", editorWidth-lineNumberWidth-2)))
 		sb.WriteString("\n")
 	}
 
@@ -571,6 +573,9 @@ func (e *Editor) renderPanel(tabIdx int, width int) string {
 func (e *Editor) renderStatusBar() string {
 	t := theme.CurrentTheme
 	tab := e.currentTab()
+	if tab == nil {
+		return lipgloss.NewStyle().Background(t.StatusBar).Width(e.width).Render(" ")
+	}
 	buf := tab.Buf
 
 	// Mode badge — colored indicator
@@ -647,7 +652,7 @@ func (e *Editor) renderStatusBar() string {
 	// Token Estimation
 	totalChars := 0
 	for _, line := range buf.Lines {
-		totalChars += len(line)
+		totalChars += utf8.RuneCountInString(line)
 	}
 	estimatedTokens := totalChars / 4
 	rightParts = append(rightParts, fmt.Sprintf("~%dt", estimatedTokens))
@@ -768,8 +773,9 @@ func (e *Editor) renderFinderOverlay(bg string) string {
 			dir := filepath.Dir(match.Path)
 			if dir != "." {
 				dir += "/"
-				if len(dir) > 30 {
-					dir = "..." + dir[len(dir)-27:]
+				if utf8.RuneCountInString(dir) > 30 {
+					runes := []rune(dir)
+					dir = "..." + string(runes[len(runes)-27:])
 				}
 				dirStr = dir
 			}
@@ -857,7 +863,11 @@ func (e *Editor) renderCommandOverlay(bg string) string {
 	sb.WriteString("\n")
 
 	// Commands - Edge Scrolling
-	visibleResults := height - 8
+	// Each command entry takes 2 lines (command + description/blank)
+	visibleResults := (height - 8) / 2
+	if visibleResults < 1 {
+		visibleResults = 1
+	}
 	if e.commandCursor < e.commandScroll {
 		e.commandScroll = e.commandCursor
 	} else if e.commandCursor >= e.commandScroll+visibleResults {
@@ -969,6 +979,9 @@ func (e *Editor) renderSearchOverlay(bg string) string {
 	matchCount := 0
 	if e.searchQuery != "" {
 		buf := e.currentBuf()
+		if buf == nil {
+			return ""
+		}
 		q := e.searchQuery
 		if !e.caseSensitive {
 			q = strings.ToLower(q)
@@ -1019,6 +1032,12 @@ func (e *Editor) renderSearchOverlay(bg string) string {
 func (e *Editor) renderGoToOverlay(bg string) string {
 	t := theme.CurrentTheme
 	width := 40
+	if e.width < width+4 {
+		width = e.width - 4
+	}
+	if width < 20 {
+		width = 20
+	}
 	height := 5
 
 	var sb strings.Builder
@@ -1056,6 +1075,12 @@ func (e *Editor) renderGoToOverlay(bg string) string {
 func (e *Editor) renderSaveAsOverlay(bg string) string {
 	t := theme.CurrentTheme
 	width := 55
+	if e.width < width+4 {
+		width = e.width - 4
+	}
+	if width < 20 {
+		width = 20
+	}
 	height := 5
 
 	var sb strings.Builder
@@ -1321,7 +1346,7 @@ func (e *Editor) renderWelcome() string {
 
 	// Version
 	ver := "v1.1.0"
-	verPad := (e.width - len(ver)) / 2
+	verPad := (e.width - lipgloss.Width(ver)) / 2
 	if verPad < 0 {
 		verPad = 0
 	}
@@ -1331,7 +1356,7 @@ func (e *Editor) renderWelcome() string {
 
 	// Separator
 	sep := strings.Repeat("─", 40)
-	sepPad := (e.width - len(sep)) / 2
+	sepPad := (e.width - lipgloss.Width(sep)) / 2
 	if sepPad < 0 {
 		sepPad = 0
 	}
@@ -1459,6 +1484,9 @@ func (e *Editor) renderUnsavedPrompt(bg string) string {
 	sb.WriteString(titleStyle.Render("UNSAVED CHANGES"))
 	sb.WriteString("\n\n")
 
+	if e.unsavedTabIdx < 0 || e.unsavedTabIdx >= len(e.tabs) {
+		return bg
+	}
 	tab := e.tabs[e.unsavedTabIdx]
 	fileName := tab.Buf.FilePath
 	if fileName == "" {
@@ -1548,21 +1576,25 @@ func (e *Editor) renderKeybindingsOverlay(bg string) string {
 	sb.WriteString("\n")
 
 	if e.kbEditing {
-		entry := e.kbEntries[e.kbEditIndex]
-		editTitleStyle := lipgloss.NewStyle().Foreground(t.AccentAlt).Bold(true)
-		sb.WriteString(editTitleStyle.Render(fmt.Sprintf("  Editing: %s (%s)", entry.Label, entry.Category)))
-		sb.WriteString("\n")
-		sb.WriteString(lipgloss.NewStyle().Foreground(t.Comment).Render("  " + entry.Description))
-		sb.WriteString("\n\n")
-		sb.WriteString(lipgloss.NewStyle().Foreground(t.Fg).Render("  Current: " + JoinKeys(entry.Keys)))
-		sb.WriteString("\n\n")
-		sb.WriteString("  New keybinding: ")
-		sb.WriteString(e.kbEditInput.View())
-		sb.WriteString("\n\n")
-		editHint := lipgloss.NewStyle().Foreground(t.Comment).Italic(true)
-		sb.WriteString(editHint.Render("  Format: key1, key2 (e.g. ctrl+s, ctrl+shift+s)"))
-		sb.WriteString("\n")
-		sb.WriteString(editHint.Render("  Enter to save  Esc to cancel"))
+		if e.kbEditIndex < 0 || e.kbEditIndex >= len(e.kbEntries) {
+			e.kbEditing = false
+		} else {
+			entry := e.kbEntries[e.kbEditIndex]
+			editTitleStyle := lipgloss.NewStyle().Foreground(t.AccentAlt).Bold(true)
+			sb.WriteString(editTitleStyle.Render(fmt.Sprintf("  Editing: %s (%s)", entry.Label, entry.Category)))
+			sb.WriteString("\n")
+			sb.WriteString(lipgloss.NewStyle().Foreground(t.Comment).Render("  " + entry.Description))
+			sb.WriteString("\n\n")
+			sb.WriteString(lipgloss.NewStyle().Foreground(t.Fg).Render("  Current: " + JoinKeys(entry.Keys)))
+			sb.WriteString("\n\n")
+			sb.WriteString("  New keybinding: ")
+			sb.WriteString(e.kbEditInput.View())
+			sb.WriteString("\n\n")
+			editHint := lipgloss.NewStyle().Foreground(t.Comment).Italic(true)
+			sb.WriteString(editHint.Render("  Format: key1, key2 (e.g. ctrl+s, ctrl+shift+s)"))
+			sb.WriteString("\n")
+			sb.WriteString(editHint.Render("  Enter to save  Esc to cancel"))
+		}
 	} else {
 		// Column headers
 		headerStyle := lipgloss.NewStyle().Foreground(t.AccentAlt).Bold(true)
@@ -1829,7 +1861,42 @@ func (e *Editor) renderGlobalSearchOverlay(bg string) string {
 
 		line := pStr + lStr + " " + cStr
 		if lipgloss.Width(line) > width-4 {
-			line = line[:width-7] + "..."
+			// Truncate by visual width, not byte offset, to avoid corrupting ANSI sequences
+			w := width - 7
+			if w < 0 {
+				w = 0
+			}
+			truncated := make([]byte, 0, w)
+			col := 0
+			for i := 0; i < len(line) && col < w; i++ {
+				b := line[i]
+				if b == 0x1b {
+					// Skip ANSI escape sequence
+					for i < len(line) && line[i] != 'm' {
+						i++
+					}
+					continue
+				}
+				if b < 0x80 {
+					truncated = append(truncated, b)
+					col++
+				} else if b < 0xC0 {
+					truncated = append(truncated, b)
+				} else if b < 0xE0 {
+					truncated = append(truncated, b, line[i+1])
+					i++
+					col++
+				} else if b < 0xF0 {
+					truncated = append(truncated, b, line[i+1], line[i+2])
+					i += 2
+					col++
+				} else {
+					truncated = append(truncated, b, line[i+1], line[i+2], line[i+3])
+					i += 3
+					col++
+				}
+			}
+			line = string(truncated) + "..."
 		}
 
 		if i == e.globalSearchCursor {
@@ -1893,7 +1960,7 @@ func (e *Editor) renderDiagnosticHint(bg string, diag *lsp.Diagnostic) string {
 
 	style := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#ff0000")).
+		BorderForeground(t.Error).
 		Background(t.Bg).
 		Padding(0, 1).
 		MaxWidth(50)
@@ -1903,8 +1970,15 @@ func (e *Editor) renderDiagnosticHint(bg string, diag *lsp.Diagnostic) string {
 
 	// Position it near the cursor
 	tab := e.currentTab()
+	if tab == nil {
+		return bg
+	}
 	lineInView := tab.CursorLine - tab.ScrollLine
-	colInView := tab.CursorCol - tab.ScrollCol + e.lineNumberWidth + 3
+	lnWidth := len(fmt.Sprintf("%d", e.currentBuf().LineCount())) + 1
+	if lnWidth < 4 {
+		lnWidth = 4
+	}
+	colInView := tab.CursorCol - tab.ScrollCol + lnWidth + 3
 
 	// Clamp positions
 	x := colInView
@@ -1926,6 +2000,9 @@ func (e *Editor) renderDiagnosticHint(bg string, diag *lsp.Diagnostic) string {
 func (e *Editor) renderAutocompleteOverlay(bg string) string {
 	t := theme.CurrentTheme
 	tab := e.currentTab()
+	if tab == nil {
+		return bg
+	}
 
 	var sb strings.Builder
 	for i, s := range e.suggestions {
@@ -1946,10 +2023,15 @@ func (e *Editor) renderAutocompleteOverlay(bg string) string {
 		Render(sb.String())
 
 	// Calculate cursor position
-	x := e.lineNumberWidth + 2 + tab.CursorCol - tab.ScrollCol
+	lnWidth := len(fmt.Sprintf("%d", e.currentBuf().LineCount())) + 1
+	if lnWidth < 4 {
+		lnWidth = 4
+	}
+	x := lnWidth + 2 + tab.CursorCol - tab.ScrollCol
 	if e.fileTreeVisible {
 		x += e.fileTree.Width
 	}
+	x += 5 // minimap width
 	y := tab.CursorLine - tab.ScrollLine + 2 // +1 for tab bar, +1 for offset
 
 	return placeOverlay(x, y, overlay, bg)
@@ -1958,6 +2040,9 @@ func (e *Editor) renderAutocompleteOverlay(bg string) string {
 func (e *Editor) renderMinimap() string {
 	t := theme.CurrentTheme
 	tab := e.currentTab()
+	if tab == nil {
+		return lipgloss.NewStyle().Width(4).Height(e.editorHeight()).Render("")
+	}
 	buf := tab.Buf
 
 	height := e.editorHeight()
@@ -2092,15 +2177,16 @@ func (e *Editor) renderTerminal() string {
 	}
 
 	// Padding
-	padStyle := lipgloss.NewStyle().Padding(0, 1)
 	content := titleStyle.Render(title) + "\n" + output + inputBar
-	rendered := padStyle.Render(content)
+	rendered := content
 
 	// Fill remaining width
+	innerWidth := w - 2
 	lines := strings.Split(rendered, "\n")
 	for i, line := range lines {
-		if len(line) < w {
-			lines[i] = line + strings.Repeat(" ", w-len(line))
+		lineWidth := lipgloss.Width(line)
+		if lineWidth < innerWidth {
+			lines[i] = line + strings.Repeat(" ", innerWidth-lineWidth)
 		}
 	}
 

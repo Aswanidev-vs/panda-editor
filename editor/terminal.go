@@ -6,6 +6,9 @@ import (
 	"io"
 	"os/exec"
 	"strings"
+	"sync"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 // TerminalModel manages an integrated shell process.
@@ -21,6 +24,7 @@ type TerminalModel struct {
 	shell    string
 	done     bool
 	onOutput func(string)
+	mu       sync.Mutex
 }
 
 // NewTerminal creates a terminal model for the given shell.
@@ -28,6 +32,7 @@ func NewTerminal(shell string) *TerminalModel {
 	return &TerminalModel{
 		shell:    shell,
 		maxLines: 500,
+		width:    80,
 		height:   10,
 		output:   make([]string, 0, 500),
 	}
@@ -65,13 +70,19 @@ func (t *TerminalModel) Start() error {
 		for scanner.Scan() {
 			line := scanner.Text()
 			line = strings.TrimRight(line, "\r\n")
+			t.mu.Lock()
+			wasAtBottom := t.scroll == 0
 			t.output = append(t.output, line)
 			if len(t.output) > t.maxLines {
 				t.output = t.output[len(t.output)-t.maxLines:]
 			}
-			t.scroll = 0
-			if t.onOutput != nil {
-				t.onOutput(line)
+			if wasAtBottom {
+				t.scroll = 0
+			}
+			cb := t.onOutput
+			t.mu.Unlock()
+			if cb != nil {
+				cb(line)
 			}
 		}
 	}()
@@ -82,13 +93,19 @@ func (t *TerminalModel) Start() error {
 		for scanner.Scan() {
 			line := scanner.Text()
 			line = strings.TrimRight(line, "\r\n")
+			t.mu.Lock()
+			wasAtBottom := t.scroll == 0
 			t.output = append(t.output, line)
 			if len(t.output) > t.maxLines {
 				t.output = t.output[len(t.output)-t.maxLines:]
 			}
-			t.scroll = 0
-			if t.onOutput != nil {
-				t.onOutput(line)
+			if wasAtBottom {
+				t.scroll = 0
+			}
+			cb := t.onOutput
+			t.mu.Unlock()
+			if cb != nil {
+				cb(line)
 			}
 		}
 	}()
@@ -96,7 +113,9 @@ func (t *TerminalModel) Start() error {
 	// Wait for process exit
 	go func() {
 		c.Wait()
+		t.mu.Lock()
 		t.done = true
+		t.mu.Unlock()
 	}()
 
 	return nil
@@ -104,6 +123,8 @@ func (t *TerminalModel) Start() error {
 
 // Stop kills the shell process.
 func (t *TerminalModel) Stop() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	if t.cmd != nil && t.cmd.Process != nil {
 		t.cmd.Process.Kill()
 	}
@@ -122,6 +143,8 @@ func (t *TerminalModel) Write(line string) error {
 
 // ScrollUp scrolls the output view up by n lines.
 func (t *TerminalModel) ScrollUp(n int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	t.scroll += n
 	maxScroll := 0
 	if len(t.output) > t.visibleLines() {
@@ -134,6 +157,8 @@ func (t *TerminalModel) ScrollUp(n int) {
 
 // ScrollDown scrolls the output view down by n lines.
 func (t *TerminalModel) ScrollDown(n int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	t.scroll -= n
 	if t.scroll < 0 {
 		t.scroll = 0
@@ -151,6 +176,8 @@ func (t *TerminalModel) visibleLines() int {
 
 // View returns the terminal panel content as a string.
 func (t *TerminalModel) View() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	if !t.IsRunning() {
 		return "Terminal not running. Press Ctrl+` to start."
 	}
@@ -169,8 +196,20 @@ func (t *TerminalModel) View() string {
 	// Output lines
 	for i := start; i < end; i++ {
 		line := t.output[i]
-		if len(line) > t.width {
-			line = line[:t.width]
+		lineWidth := lipgloss.Width(line)
+		if lineWidth > t.width {
+			// Truncate by visual width
+			trunc := make([]rune, 0, t.width)
+			w := 0
+			for _, r := range line {
+				rw := lipgloss.Width(string(r))
+				if w+rw > t.width {
+					break
+				}
+				trunc = append(trunc, r)
+				w += rw
+			}
+			line = string(trunc)
 		}
 		sb.WriteString(line)
 		if i < end-1 {
@@ -200,6 +239,8 @@ func (t *TerminalModel) PromptView() string {
 
 // IsRunning returns whether the shell process is alive.
 func (t *TerminalModel) IsRunning() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	return t.cmd != nil && !t.done
 }
 
