@@ -4,7 +4,12 @@ import (
 	"encoding/json"
 	"net/url"
 	"path/filepath"
+	"time"
 )
+
+func timeNow() int64 {
+	return time.Now().UnixNano()
+}
 
 // InitializeParams as defined in LSP spec.
 type InitializeParams struct {
@@ -54,6 +59,40 @@ func (c *Client) DidOpen(path, languageID, text string) error {
 		},
 	}
 	return c.Notify("textDocument/didOpen", params)
+}
+
+// TextDocumentContentChangeEvent as defined in LSP spec.
+type TextDocumentContentChangeEvent struct {
+	Text string `json:"text"`
+}
+
+// DidChangeTextDocumentParams as defined in LSP spec.
+type DidChangeTextDocumentParams struct {
+	TextDocument   VersionedTextDocumentIdentifier  `json:"textDocument"`
+	ContentChanges []TextDocumentContentChangeEvent `json:"contentChanges"`
+}
+
+// VersionedTextDocumentIdentifier as defined in LSP spec.
+type VersionedTextDocumentIdentifier struct {
+	URI     string `json:"uri"`
+	Version int    `json:"version"`
+}
+
+// DidChange sends a full textDocument/didChange notification to the server.
+// We send the entire document text on every change (cheaper than implementing
+// incremental sync for a hobbyist editor).
+func (c *Client) DidChange(path, languageID, text string) error {
+	version := int(timeNow()) // simple monotonic counter
+	params := DidChangeTextDocumentParams{
+		TextDocument: VersionedTextDocumentIdentifier{
+			URI:     fileURI(path),
+			Version: version,
+		},
+		ContentChanges: []TextDocumentContentChangeEvent{
+			{Text: text},
+		},
+	}
+	return c.Notify("textDocument/didChange", params)
 }
 
 // Diagnostics notification.

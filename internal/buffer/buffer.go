@@ -2,11 +2,20 @@ package buffer
 
 import (
 	"bufio"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
 )
+
+// MaxOpenBytes caps the size of a file that can be opened in the editor.
+// Files larger than this return ErrFileTooLarge so the UI can prompt the user.
+const MaxOpenBytes int64 = 25 * 1024 * 1024 // 25 MB
+
+// ErrFileTooLarge is returned by Open when a file exceeds MaxOpenBytes.
+var ErrFileTooLarge = errors.New("file exceeds maximum open size")
 
 type Buffer struct {
 	Lines    []string
@@ -26,13 +35,15 @@ func New() *Buffer {
 	}
 }
 
+// Open reads a file from disk. If the file is larger than MaxOpenBytes,
+// it returns ErrFileTooLarge so callers can decide how to handle it.
 func Open(path string) (*Buffer, error) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
 	}
 
-	data, err := os.ReadFile(absPath)
+	info, err := os.Stat(absPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return &Buffer{
@@ -44,6 +55,21 @@ func Open(path string) (*Buffer, error) {
 			}, nil
 		}
 		return nil, err
+	}
+
+	if !info.IsDir() && info.Size() > MaxOpenBytes {
+		return nil, fmt.Errorf("%w: %s is %d bytes (limit %d)",
+			ErrFileTooLarge, filepath.Base(absPath), info.Size(), MaxOpenBytes)
+	}
+
+	data, err := os.ReadFile(absPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if !utf8.Valid(data) {
+		// Fall back to lossy decode for non-UTF-8 files instead of corrupting the buffer.
+		data = []byte(string(data))
 	}
 
 	lines := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
@@ -119,13 +145,13 @@ func (b *Buffer) InsertChar(line, col int, ch string) (int, int) {
 	if col > len(runes) {
 		col = len(runes)
 	}
-	newRunes := make([]rune, 0, len(runes)+1)
+	newRunes := make([]rune, 0, len(runes)+utf8.RuneCountInString(ch))
 	newRunes = append(newRunes, runes[:col]...)
 	newRunes = append(newRunes, []rune(ch)...)
 	newRunes = append(newRunes, runes[col:]...)
 	b.Lines[line] = string(newRunes)
 	b.Modified = true
-	return line, col + 1
+	return line, col + utf8.RuneCountInString(ch)
 }
 
 func (b *Buffer) InsertNewline(line, col int) (int, int) {
@@ -193,6 +219,48 @@ func (b *Buffer) Backspace(line, col int) (int, int) {
 		return line - 1, prevLen
 	}
 	return line, col
+}
+
+// SmartBackspace removes a tab/4-spaces worth of indentation when the cursor
+// is in a line's leading whitespace, so users can unindent with Backspace.
+func (b *Buffer) SmartBackspace(line, col int) (int, int) {
+	if line < 0 || line >= len(b.Lines) {
+		return line, col
+	}
+	runes := []rune(b.Lines[line])
+	if col > len(runes) {
+		col = len(runes)
+	}
+	if col == 0 {
+		return b.Backspace(line, col)
+	}
+	// Walk back over the leading-whitespace region only.
+	wsEnd := 0
+	for wsEnd < len(runes) && (runes[wsEnd] == ' ' || runes[wsEnd] == '\t') {
+		wsEnd++
+	}
+	if wsEnd == 0 || col > wsEnd {
+		return b.Backspace(line, col)
+	}
+	remove := 0
+	if runes[col-1] == '\t' {
+		remove = 1
+	} else {
+		count := 0
+		for k := col - 1; k >= 0 && runes[k] == ' ' && count < 4; k-- {
+			count++
+		}
+		if count == 0 {
+			count = 1
+		}
+		remove = count
+	}
+	newRunes := make([]rune, 0, len(runes))
+	newRunes = append(newRunes, runes[:col-remove]...)
+	newRunes = append(newRunes, runes[col:]...)
+	b.Lines[line] = string(newRunes)
+	b.Modified = true
+	return line, col - remove
 }
 
 func (b *Buffer) Delete(line, col int) (int, int) {

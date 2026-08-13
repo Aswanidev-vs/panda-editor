@@ -21,7 +21,9 @@ const (
 )
 
 // MaxFileSizeBytes is the default maximum file size to include (0 = no limit).
-var MaxFileSizeBytes int64 = 0
+// Defaults to 1 MB so that accidental bundle of a large generated file
+// doesn't blow up the LLM context window.
+var MaxFileSizeBytes int64 = 1 * 1024 * 1024
 
 // EstimateTokens gives a rough token count for a string (chars/4).
 func EstimateTokens(s string) int {
@@ -41,20 +43,18 @@ func EstimateFileTokens(path string) int {
 // parses their imports, and if they import local project packages, adds those
 // files to the list.
 func ResolveLocalDependencies(paths []string) []string {
-	// 1. Try to find go.mod to get module name
 	cwd, _ := os.Getwd()
 	modData, err := os.ReadFile(filepath.Join(cwd, "go.mod"))
 	if err != nil {
-		return paths // Not a Go module or cannot read
+		return paths
 	}
-	
+
 	modMatch := regexp.MustCompile(`module\s+([^\s]+)`).FindStringSubmatch(string(modData))
 	if len(modMatch) < 2 {
 		return paths
 	}
 	moduleName := modMatch[1]
 
-	// To avoid infinite loops and duplicates
 	resolved := make(map[string]bool)
 	for _, p := range paths {
 		abs, _ := filepath.Abs(p)
@@ -80,11 +80,9 @@ func ResolveLocalDependencies(paths []string) []string {
 		for _, imp := range f.Imports {
 			impPath := strings.Trim(imp.Path.Value, `"`)
 			if strings.HasPrefix(impPath, moduleName+"/") {
-				// Resolve local path
 				relPath := strings.TrimPrefix(impPath, moduleName+"/")
 				dirPath := filepath.Join(cwd, filepath.FromSlash(relPath))
-				
-				// Read all .go files in that directory
+
 				entries, err := os.ReadDir(dirPath)
 				if err != nil {
 					continue
@@ -115,6 +113,7 @@ type fileEntry struct {
 	Lang    string
 	Content string
 	Skipped bool
+	Reason  string
 }
 
 func readFiles(resolvedPaths []string) []fileEntry {
@@ -138,6 +137,7 @@ func readFiles(resolvedPaths []string) []fileEntry {
 				Path:    p,
 				RelPath: relPath,
 				Skipped: true,
+				Reason:  "exceeds max size",
 			})
 			continue
 		}
@@ -204,7 +204,7 @@ func GenerateMarkdown(paths []string) (string, error) {
 
 	for _, f := range files {
 		if f.Skipped {
-			sb.WriteString(fmt.Sprintf("## File: `%s` [SKIPPED: exceeds max size]\n\n", f.RelPath))
+			sb.WriteString(fmt.Sprintf("## File: `%s` [SKIPPED: %s]\n\n", f.RelPath, f.Reason))
 			continue
 		}
 		sb.WriteString(fmt.Sprintf("## File: `%s`\n\n", f.RelPath))
@@ -232,6 +232,7 @@ func GenerateXML(paths []string) (string, error) {
 		XMLName xml.Name `xml:"file"`
 		Path    string   `xml:"path,attr"`
 		Skipped bool     `xml:"skipped,attr,omitempty"`
+		Reason  string   `xml:"reason,attr,omitempty"`
 		Content string   `xml:",chardata"`
 	}
 	type XMLBundle struct {
@@ -244,6 +245,7 @@ func GenerateXML(paths []string) (string, error) {
 		xf := XMLFile{Path: f.RelPath}
 		if f.Skipped {
 			xf.Skipped = true
+			xf.Reason = f.Reason
 		} else {
 			xf.Content = f.Content
 		}
@@ -274,7 +276,7 @@ func GeneratePlainText(paths []string) (string, error) {
 	for _, f := range files {
 		sb.WriteString(strings.Repeat("=", 60) + "\n")
 		if f.Skipped {
-			sb.WriteString(fmt.Sprintf("FILE: %s [SKIPPED: exceeds max size]\n", f.RelPath))
+			sb.WriteString(fmt.Sprintf("FILE: %s [SKIPPED: %s]\n", f.RelPath, f.Reason))
 			sb.WriteString(strings.Repeat("=", 60) + "\n\n")
 			continue
 		}
@@ -292,7 +294,30 @@ func GeneratePlainText(paths []string) (string, error) {
 
 // ---------- Secret redaction ----------
 
+// redactSecrets replaces high-risk credentials with [REDACTED] tokens.
+// It catches four common patterns:
+//   - JSON / YAML quoted:    "key": "value"
+//   - YAML unquoted / INI:   key: value (until end of line)
+//   - .env / shell export:   KEY=value
+//   - Bearer header / private key block / AWS-style env entries.
+//
+// Keys matched: api_key, apikey, secret, token, password, passwd,
+// private_key, access_key, client_secret, auth.
+var (
+	quotedSecretRe   = regexp.MustCompile(`(?i)(["']?(?:api[_-]?key|apikey|secret|token|password|passwd|private[_-]?key|access[_-]?key|client[_-]?secret|auth)["']?\s*[:=]\s*["'])([^"'\n\r]{6,})(["']?)`)
+	unquotedSecretRe = regexp.MustCompile(`(?im)(^|\s)(["']?(?:api[_-]?key|apikey|secret|token|password|passwd|private[_-]?key|access[_-]?key|client[_-]?secret|auth)["']?\s*[:=]\s*)([^\s"',#][^\s,#]*[^\s,#]|[^\s,#])`)
+	envSecretRe      = regexp.MustCompile(`(?im)^(\s*(?:export\s+)?(?:API[_-]?KEY|APISECRET|SECRET|TOKEN|PASSWORD|PASSWD|PRIVATE[_-]?KEY|ACCESS[_-]?KEY|CLIENT[_-]?SECRET|AUTH))\s*=\s*([^\s#"'][^\s#]*)`)
+	bearerRe         = regexp.MustCompile(`(?i)(Bearer\s+)([A-Za-z0-9_\-\.]{20,})`)
+	privateKeyRe     = regexp.MustCompile(`(?i)(-----BEGIN [A-Z ]*PRIVATE KEY-----)`)
+	awsSecretRe      = regexp.MustCompile(`(?i)(aws_secret_access_key\s*=\s*)([A-Za-z0-9/+=]{30,})`)
+)
+
 func redactSecrets(content string) string {
-	re := regexp.MustCompile(`(?i)(api_key|apikey|secret|token|password|passwd)["'\s]*[:=]["'\s]*([a-zA-Z0-9_\-\.]{10,})`)
-	return re.ReplaceAllString(content, `$1: "[REDACTED]"`)
+	content = quotedSecretRe.ReplaceAllString(content, `${1}[REDACTED]${3}`)
+	content = unquotedSecretRe.ReplaceAllString(content, `${1}${2}[REDACTED]`)
+	content = envSecretRe.ReplaceAllString(content, `${1}=[REDACTED]`)
+	content = bearerRe.ReplaceAllString(content, `${1}[REDACTED]`)
+	content = privateKeyRe.ReplaceAllString(content, `${1}`)
+	content = awsSecretRe.ReplaceAllString(content, `${1}[REDACTED]`)
+	return content
 }

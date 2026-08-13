@@ -2,6 +2,7 @@ package editor
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -99,55 +101,55 @@ type DiagnosticMsg struct {
 }
 
 type Editor struct {
-	keys             KeyMap
-	keyBindCfg       KeyBindConfig
-	width            int
-	height           int
-	tabs             []Tab
-	activeTab        int
-	fileTree         FileTree
-	fileTreeVisible  bool
-	fileTreeRoot     string
-	mode             ViewMode
-	finderInput      textinput.Model
-	finderResults    []fuzzy.Match
-	finderCursor     int
-	commandInput     textinput.Model
-	commandResults   []Command
-	commandCursor    int
-	searchInput      textinput.Model
-	replaceInput     textinput.Model
-	searchQuery      string
-	replaceQuery     string
-	searchActive     bool
-	gotoInput        textinput.Model
-	saveAsInput      textinput.Model
-	messages         []string
-	messageTimer     int
-	zoomLevel        int
-	showHelp         bool
-	lineNumberWidth  int
-	statusHeight     int
-	tabBarHeight     int
-	fileList         []string
-	clipboard        string
-	isRegexSearch    bool
-	caseSensitive    bool
-	multiCursors     []Cursor
-	kbEntries        []KeyBindEntry
-	kbCursor         int
-	kbScroll         int
-	kbEditing        bool
-	kbEditInput      textinput.Model
-	kbEditIndex      int
-	kbCategoryFilter string
-	hasSession       bool
-	sessionTimer     int
-	welcomeCursor    int
+	keys                KeyMap
+	keyBindCfg          KeyBindConfig
+	width               int
+	height              int
+	tabs                []Tab
+	activeTab           int
+	fileTree            FileTree
+	fileTreeVisible     bool
+	fileTreeRoot        string
+	mode                ViewMode
+	finderInput         textinput.Model
+	finderResults       []fuzzy.Match
+	finderCursor        int
+	commandInput        textinput.Model
+	commandResults      []Command
+	commandCursor       int
+	searchInput         textinput.Model
+	replaceInput        textinput.Model
+	searchQuery         string
+	replaceQuery        string
+	searchActive        bool
+	gotoInput           textinput.Model
+	saveAsInput         textinput.Model
+	messages            []string
+	messageTimer        int
+	zoomLevel           int
+	showHelp            bool
+	lineNumberWidth     int
+	statusHeight        int
+	tabBarHeight        int
+	fileList            []string
+	clipboard           string
+	isRegexSearch       bool
+	caseSensitive       bool
+	multiCursors        []Cursor
+	kbEntries           []KeyBindEntry
+	kbCursor            int
+	kbScroll            int
+	kbEditing           bool
+	kbEditInput         textinput.Model
+	kbEditIndex         int
+	kbCategoryFilter    string
+	hasSession          bool
+	sessionTimer        int
+	welcomeCursor       int
 	openFolderInput     textinput.Model
 	fileTreeFilterInput textinput.Model
-	fileWatcher      *watcher.Watcher
-	fileChangeChan   chan string
+	fileWatcher         *watcher.Watcher
+	fileChangeChan      chan string
 
 	globalSearchInput   textinput.Model
 	globalSearchResults []searcher.SearchResult
@@ -162,31 +164,34 @@ type Editor struct {
 	gitBranch           string
 
 	lspClients      map[string]*lsp.Client
+	lspClientsMu    sync.Mutex
 	lspDiagChan     chan DiagnosticMsg
 	fileDiagnostics map[string][]lsp.Diagnostic
 
 	gitBranchTimer int
+	autoSaveTimer  int
 	config         config.Config
+	recentFiles    []string
 
-	pendingAction ActionType
+	pendingAction  ActionType
 	postSaveAction ActionType
-	unsavedTabIdx int
-	pendingRename string
-	pendingDelete string
-	fileDiffs     map[string]map[int]string // [filepath][line_number]marker
-	suggestions   []string
-	suggestionIdx int
-	splitActive   bool
-	activePanel   int // 0: left, 1: right
-	rightTab      int // index of tab in right panel
-	bundleFormat  int // 0: Markdown, 1: XML, 2: Plain Text
-	sessionInfo      string
-	relativeLineNo   bool
-	settingsScroll   int
-	term             *TerminalModel
-	termVisible      bool
-	termFocused      bool
-	termHeight       int
+	unsavedTabIdx  int
+	pendingRename  string
+	pendingDelete  string
+	fileDiffs      map[string]map[int]string // [filepath][line_number]marker
+	suggestions    []string
+	suggestionIdx  int
+	splitActive    bool
+	activePanel    int // 0: left, 1: right
+	rightTab       int // index of tab in right panel
+	bundleFormat   int // 0: Markdown, 1: XML, 2: Plain Text
+	sessionInfo    string
+	relativeLineNo bool
+	settingsScroll int
+	term           *TerminalModel
+	termVisible    bool
+	termFocused    bool
+	termHeight     int
 }
 
 type Cursor struct {
@@ -194,7 +199,7 @@ type Cursor struct {
 	Col  int
 }
 
-func NewEditor() Editor {
+func NewEditor() *Editor {
 	keyBindCfg := LoadKeyBindConfig()
 	keys := KeyMapFromConfig(keyBindCfg)
 	cfg, _ := config.LoadConfig()
@@ -266,45 +271,45 @@ func NewEditor() Editor {
 	}
 
 	e := Editor{
-		keys:              keys,
-		keyBindCfg:        keyBindCfg,
-		tabs:              []Tab{{Buf: buffer.New(), CursorLine: 0, CursorCol: 0, ScrollLine: 0, ScrollCol: 0, TargetScrollL: 0, TargetScrollC: 0}},
-		activeTab:         0,
-		fileTree:          NewFileTree(cwd),
-		fileTreeVisible:   true,
-		fileTreeRoot:      cwd,
-		mode:              ViewWelcome,
-		finderInput:       fi,
-		commandInput:      ci,
-		searchInput:       si,
-		replaceInput:      ri,
-		gotoInput:         gi,
-		saveAsInput:       sai,
-		kbEditInput:       kbi,
-		openFolderInput:   ofi,
-		zoomLevel:         0,
-		lineNumberWidth:   5,
-		statusHeight:      1,
-		tabBarHeight:      1,
-		termHeight:        10,
-		termFocused:       false,
-		termVisible:       false,
-		hasSession:        hasSession,
-		sessionInfo:        sessionInfo,
-		sessionTimer:      0,
-		welcomeCursor:     0,
-		fileChangeChan:    make(chan string, 10),
-		globalSearchInput: gsi,
+		keys:                keys,
+		keyBindCfg:          keyBindCfg,
+		tabs:                []Tab{{Buf: buffer.New(), CursorLine: 0, CursorCol: 0, ScrollLine: 0, ScrollCol: 0, TargetScrollL: 0, TargetScrollC: 0}},
+		activeTab:           0,
+		fileTree:            NewFileTree(cwd),
+		fileTreeVisible:     true,
+		fileTreeRoot:        cwd,
+		mode:                ViewWelcome,
+		finderInput:         fi,
+		commandInput:        ci,
+		searchInput:         si,
+		replaceInput:        ri,
+		gotoInput:           gi,
+		saveAsInput:         sai,
+		kbEditInput:         kbi,
+		openFolderInput:     ofi,
+		zoomLevel:           0,
+		lineNumberWidth:     5,
+		statusHeight:        1,
+		tabBarHeight:        1,
+		termHeight:          10,
+		termFocused:         false,
+		termVisible:         false,
+		hasSession:          hasSession,
+		sessionInfo:         sessionInfo,
+		sessionTimer:        0,
+		welcomeCursor:       0,
+		fileChangeChan:      make(chan string, 10),
+		globalSearchInput:   gsi,
 		fileTreeFilterInput: ftfi,
-		searchResultChan:  make(chan []searcher.SearchResult, 10),
-		searchDoneChan:    make(chan bool, 1),
-		lspClients:        make(map[string]*lsp.Client),
-		lspDiagChan:       make(chan DiagnosticMsg, 10),
-		fileDiagnostics:   make(map[string][]lsp.Diagnostic),
-		fileDiffs:         make(map[string]map[int]string),
-		gitBranchTimer:    0,
-		rightTab:          0,
-		config:            cfg,
+		searchResultChan:    make(chan []searcher.SearchResult, 10),
+		searchDoneChan:      make(chan bool, 1),
+		lspClients:          make(map[string]*lsp.Client),
+		lspDiagChan:         make(chan DiagnosticMsg, 10),
+		fileDiagnostics:     make(map[string][]lsp.Diagnostic),
+		fileDiffs:           make(map[string]map[int]string),
+		gitBranchTimer:      0,
+		rightTab:            0,
+		config:              cfg,
 	}
 
 	e.kbEntries = e.keyBindCfg.GetKeyBindEntries()
@@ -326,7 +331,7 @@ func NewEditor() Editor {
 	// Apply config (theme, relative line numbers, etc.)
 	e.applyConfig()
 
-	return e
+	return &e
 }
 
 func (e *Editor) startLSPServers() {
@@ -346,16 +351,31 @@ func (e *Editor) startLSPServers() {
 					if runtime.GOOS == "windows" {
 						path = filepath.FromSlash(path)
 					}
-					e.lspDiagChan <- DiagnosticMsg{Path: path, Diagnostics: result.Diagnostics}
+					select {
+					case e.lspDiagChan <- DiagnosticMsg{Path: path, Diagnostics: result.Diagnostics}:
+					default:
+						// Drop diagnostics if the consumer is behind to avoid blocking the LSP reader.
+					}
 				}
 			}
 		})
-		if err == nil {
-			err = client.Initialize(e.fileTreeRoot)
-			if err == nil {
-				e.lspClients[lang] = client
-			}
+		if err != nil {
+			// Server binary missing or failed to start — that's fine, the
+			// editor can still operate without language intelligence.
+			continue
 		}
+		// Initialize runs in its own goroutine so a slow / hung LSP server
+		// (or one that's not installed) can't block the editor's startup.
+		go func(lang string, c *lsp.Client) {
+			if err := c.Initialize(e.fileTreeRoot); err != nil {
+				e.showMessage("LSP " + lang + ": " + err.Error())
+				c.Close()
+				return
+			}
+			e.lspClientsMu.Lock()
+			e.lspClients[lang] = c
+			e.lspClientsMu.Unlock()
+		}(lang, client)
 	}
 }
 
@@ -493,12 +513,19 @@ func (e *Editor) tickAnimation() tea.Cmd {
 
 func (e *Editor) animate() {
 	tab := e.currentTab()
+	if tab == nil {
+		return
+	}
 	// Smooth scroll line
 	diffL := tab.TargetScrollL - tab.ScrollLine
 	if diffL != 0 {
 		step := diffL / 4
 		if step == 0 {
-			if diffL > 0 { step = 1 } else { step = -1 }
+			if diffL > 0 {
+				step = 1
+			} else {
+				step = -1
+			}
 		}
 		tab.ScrollLine += step
 	}
@@ -508,7 +535,11 @@ func (e *Editor) animate() {
 	if diffC != 0 {
 		step := diffC / 4
 		if step == 0 {
-			if diffC > 0 { step = 1 } else { step = -1 }
+			if diffC > 0 {
+				step = 1
+			} else {
+				step = -1
+			}
 		}
 		tab.ScrollCol += step
 	}
@@ -521,13 +552,53 @@ func (e *Editor) listenForFileChanges() tea.Cmd {
 	}
 }
 
+// gitInfoActiveModes is the set of editor modes where background work
+// (git branch polling, diagnostics) is meaningful.
+func gitInfoActiveMode(m ViewMode) bool {
+	switch m {
+	case ViewNormal, ViewFileTree, ViewFileTreeFilter:
+		return true
+	default:
+		return false
+	}
+}
+
 func (e *Editor) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Global quit shortcut: works in every mode (including overlays) so the
+	// editor can always be exited. Ctrl+Shift+Q force-quits even with unsaved
+	// changes; Ctrl+Q prompts to save first.
+	if km, ok := msg.(tea.KeyMsg); ok {
+		if key.Matches(km, e.keys.ForceQuit) {
+			e.saveSession()
+			if e.term != nil {
+				e.term.Stop()
+			}
+			return e, tea.Quit
+		}
+		if key.Matches(km, e.keys.Quit) {
+			for i, t := range e.tabs {
+				if t.Buf.Modified {
+					e.activeTab = i
+					e.mode = ViewUnsavedPrompt
+					e.pendingAction = ActionQuit
+					e.unsavedTabIdx = i
+					return e, nil
+				}
+			}
+			e.saveSession()
+			if e.term != nil {
+				e.term.Stop()
+			}
+			return e, tea.Quit
+		}
+	}
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		e.width = msg.Width
 		e.height = msg.Height
 		if e.term != nil {
-			e.term.Resize(msg.Width-2, e.termHeight-1)
+			e.term.Resize(msg.Width-2, e.termHeight)
 		}
 		return e, e.tickAnimation()
 
@@ -535,6 +606,16 @@ func (e *Editor) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		e.animate()
 		if e.messageTimer > 0 {
 			e.messageTimer--
+		}
+		// Auto-save: when the configured interval elapses and there are
+		// dirty buffers with a known file path, save them silently.
+		if e.config.Editor.AutoSaveInterval > 0 && e.mode == ViewNormal {
+			if e.autoSaveTimer <= 0 {
+				e.autoSaveDirtyTabs()
+				e.autoSaveTimer = e.config.Editor.AutoSaveInterval * 60
+			} else {
+				e.autoSaveTimer--
+			}
 		}
 		return e, e.tickAnimation()
 
@@ -551,6 +632,8 @@ func (e *Editor) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+		// Invalidate git-diff cache for this file
+		delete(e.fileDiffs, msg.Path)
 		return e, e.listenForFileChanges()
 
 	case searcher.SearchProgressMsg:
@@ -568,16 +651,21 @@ func (e *Editor) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return e, e.listenForDiagnostics()
 	}
 
-	// Update git info periodically
-	if e.gitBranchTimer <= 0 {
-		e.gitBranch = e.getGitBranch()
-		tab := e.currentTab()
-		if tab != nil && tab.Buf != nil && tab.Buf.FilePath != "" {
-			e.fileDiffs[tab.Buf.FilePath] = e.getGitDiffs(tab.Buf.FilePath)
+	// Update git info periodically, but only in editor modes where it's
+	// actually rendered. Avoids spawning git subprocesses in overlays.
+	if gitInfoActiveMode(e.mode) {
+		if e.gitBranchTimer <= 0 {
+			e.gitBranch = e.getGitBranch()
+			tab := e.currentTab()
+			if tab != nil && tab.Buf != nil && tab.Buf.FilePath != "" {
+				if _, ok := e.fileDiffs[tab.Buf.FilePath]; !ok {
+					e.fileDiffs[tab.Buf.FilePath] = e.getGitDiffs(tab.Buf.FilePath)
+				}
+			}
+			e.gitBranchTimer = 500 // roughly every 5-10 seconds
+		} else {
+			e.gitBranchTimer--
 		}
-		e.gitBranchTimer = 500 // roughly every 5-10 seconds
-	} else {
-		e.gitBranchTimer--
 	}
 
 	switch e.mode {
@@ -626,6 +714,9 @@ func (e *Editor) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (e *Editor) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if e.mode != ViewNormal {
+		return e, nil
+	}
 	switch msg.Type {
 	case tea.MouseWheelUp:
 		e.scrollUp(3)
@@ -647,22 +738,28 @@ func (e *Editor) updateNormal(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			switch msg.String() {
 			case "enter":
-				e.term.Write(e.term.input)
-				e.term.input = ""
+				if err := e.term.Write(e.term.input); err != nil {
+					e.showMessage("Terminal write error: " + err.Error())
+				}
+				e.term.SetInput("")
 				return e, nil
 			case "backspace":
-				if len(e.term.input) > 0 {
-					e.term.input = e.term.input[:len(e.term.input)-1]
-				}
+				e.term.InputBackspace()
 				return e, nil
 			case "ctrl+c":
-				e.term.Write("\x03")
+				if err := e.term.Write("\x03"); err != nil {
+					e.showMessage("Terminal write error: " + err.Error())
+				}
 				return e, nil
 			case "ctrl+d":
-				e.term.Write("\x04")
+				if err := e.term.Write("\x04"); err != nil {
+					e.showMessage("Terminal write error: " + err.Error())
+				}
 				return e, nil
 			case "ctrl+z":
-				e.term.Write("\x1a")
+				if err := e.term.Write("\x1a"); err != nil {
+					e.showMessage("Terminal write error: " + err.Error())
+				}
 				return e, nil
 			case "up":
 				e.term.ScrollUp(1)
@@ -678,7 +775,7 @@ func (e *Editor) updateNormal(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return e, nil
 			default:
 				if len(msg.String()) == 1 && msg.String()[0] >= 32 {
-					e.term.input += msg.String()
+					e.term.AppendInput(msg.String())
 					return e, nil
 				}
 			}
@@ -1059,7 +1156,9 @@ func (e *Editor) updateNormal(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, e.keys.Backspace):
 			e.pushUndo()
 			tab.SelectActive = false
-			tab.CursorLine, tab.CursorCol = e.currentBuf().Backspace(tab.CursorLine, tab.CursorCol)
+			// Use SmartBackspace so the editor unindents when the cursor is
+			// sitting inside a line's leading whitespace, mirroring Shift+Tab.
+			tab.CursorLine, tab.CursorCol = e.currentBuf().SmartBackspace(tab.CursorLine, tab.CursorCol)
 			e.ensureCursorVisible()
 			return e, nil
 
@@ -1320,9 +1419,18 @@ func (e *Editor) ensureCursorVisible() {
 		tab.TargetScrollL = 0
 	}
 
-	lnWidth := e.lineNumberWidth + 1
+	lnWidth := len(fmt.Sprintf("%d", tab.Buf.LineCount())) + 1
+	if lnWidth < 4 {
+		lnWidth = 4
+	}
+	e.lineNumberWidth = lnWidth
 	editorWidth := e.editorWidth()
-	visibleCols := editorWidth - lnWidth - 3
+	// The right split pane is one column narrower than editorWidth() because
+	// of the separator, so use its real width for horizontal-scroll math.
+	if e.splitActive && e.activePanel == 1 {
+		editorWidth--
+	}
+	visibleCols := editorWidth - lnWidth - 2
 	if visibleCols < 10 {
 		visibleCols = 10
 	}
@@ -1448,14 +1556,14 @@ func (e *Editor) handleCloseTab() (tea.Model, tea.Cmd) {
 		e.unsavedTabIdx = e.activeTab
 		return e, nil
 	}
-	
+
 	if len(e.tabs) == 1 {
 		e.mode = ViewWelcome
 		e.tabs = []Tab{{Buf: buffer.New()}}
 		e.activeTab = 0
 		return e, nil
 	}
-	
+
 	buf := e.currentBuf()
 	if e.fileWatcher != nil && buf.FilePath != "" {
 		e.fileWatcher.Unwatch(buf.FilePath)
@@ -1770,10 +1878,7 @@ func (e *Editor) searchPrev() {
 }
 
 func (e *Editor) showMessage(msg string) {
-	e.messages = append(e.messages, msg)
-	if len(e.messages) > 5 {
-		e.messages = e.messages[1:]
-	}
+	e.messages = []string{msg}
 	e.messageTimer = 150
 }
 
@@ -1793,7 +1898,11 @@ func (e *Editor) openFile(path string) {
 
 	buf, err := buffer.Open(absPath)
 	if err != nil {
-		e.showMessage(fmt.Sprintf("Error: %v", err))
+		if errors.Is(err, buffer.ErrFileTooLarge) {
+			e.showMessage(fmt.Sprintf("File too large to open: %s", filepath.Base(absPath)))
+		} else {
+			e.showMessage(fmt.Sprintf("Error: %v", err))
+		}
 		return
 	}
 
@@ -1805,15 +1914,43 @@ func (e *Editor) openFile(path string) {
 		ScrollCol:  0,
 	})
 	e.activeTab = len(e.tabs) - 1
+	e.pushRecent(absPath)
 
 	if e.fileWatcher != nil {
 		_ = e.fileWatcher.Watch(absPath)
 	}
 
 	// Notify LSP
-	if client, ok := e.lspClients[buf.Language]; ok {
+	e.lspClientsMu.Lock()
+	client, ok := e.lspClients[buf.Language]
+	e.lspClientsMu.Unlock()
+	if ok {
 		_ = client.DidOpen(absPath, buf.Language, strings.Join(buf.Lines, "\n"))
 	}
+}
+
+// withinProject returns true if path is inside the current workspace root.
+// It resolves symlinks and cleans the path before comparing.
+func (e *Editor) withinProject(path string) bool {
+	root, err := filepath.Abs(e.fileTreeRoot)
+	if err != nil {
+		return false
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(root, abs)
+	if err != nil {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	if strings.HasPrefix(rel, "..") || strings.HasPrefix(rel, string(os.PathSeparator)+"..") {
+		return false
+	}
+	return true
 }
 
 func (e *Editor) updateFinderResults(query string) {
@@ -1952,6 +2089,68 @@ func (e *Editor) executeCommand(action string) (tea.Model, tea.Cmd) {
 		e.fileTreeVisible = !e.fileTreeVisible
 		return e, nil
 
+	case "split_pane":
+		e.splitActive = !e.splitActive
+		if e.splitActive {
+			if e.rightTab >= len(e.tabs) {
+				e.rightTab = e.activeTab
+			}
+			// Show a different buffer in the right pane when possible so the
+			// two panels don't share the same tab (and its scroll state).
+			if e.rightTab == e.activeTab && len(e.tabs) > 1 {
+				for i := 0; i < len(e.tabs); i++ {
+					if i != e.activeTab {
+						e.rightTab = i
+						break
+					}
+				}
+			}
+			e.showMessage("Split pane ON")
+		} else {
+			e.showMessage("Split pane OFF")
+		}
+		return e, nil
+
+	case "toggle_case":
+		e.caseSensitive = !e.caseSensitive
+		if e.caseSensitive {
+			e.showMessage("Search: case sensitive")
+		} else {
+			e.showMessage("Search: case insensitive")
+		}
+		return e, nil
+
+	case "cycle_theme":
+		// Toggle between the two built-in themes, then walk any user themes.
+		themes := []theme.Theme{theme.Dark, theme.Light}
+		for _, p := range theme.ListUserThemes() {
+			if t, err := theme.LoadThemeFromFile(p); err == nil {
+				themes = append(themes, t)
+			}
+		}
+		idx := 0
+		for i, t := range themes {
+			if t.Name == theme.CurrentTheme.Name {
+				idx = i
+				break
+			}
+		}
+		next := themes[(idx+1)%len(themes)]
+		theme.SetTheme(next)
+		e.config.Theme = next.Name
+		e.showMessage("Theme: " + next.Name)
+		return e, nil
+
+	case "recent_files":
+		if len(e.recentFiles) == 0 {
+			e.showMessage("No recent files yet")
+			return e, nil
+		}
+		// Open the most-recent file
+		e.openFile(e.recentFiles[0])
+		e.showMessage("Opened: " + filepath.Base(e.recentFiles[0]))
+		return e, nil
+
 	case "bundle_ai":
 		paths := e.fileTree.GetSelectedPaths()
 		if len(paths) == 0 {
@@ -2047,27 +2246,33 @@ func (e *Editor) executeCommand(action string) (tea.Model, tea.Cmd) {
 		return e, nil
 
 	case "dup_line":
+		e.pushUndo()
 		e.currentBuf().DuplicateLine(e.currentTab().CursorLine)
 		e.currentTab().CursorLine++
 		return e, nil
 
 	case "del_line":
+		e.pushUndo()
 		e.currentBuf().DeleteLine(e.currentTab().CursorLine)
 		return e, nil
 
 	case "move_up":
+		e.pushUndo()
 		e.currentTab().CursorLine = e.currentBuf().MoveLineUp(e.currentTab().CursorLine)
 		return e, nil
 
 	case "move_down":
+		e.pushUndo()
 		e.currentTab().CursorLine = e.currentBuf().MoveLineDown(e.currentTab().CursorLine)
 		return e, nil
 
 	case "indent":
+		e.pushUndo()
 		e.handleIndent()
 		return e, nil
 
 	case "unindent":
+		e.pushUndo()
 		e.handleUnindent()
 		return e, nil
 
@@ -2205,7 +2410,6 @@ func (e *Editor) executeCommand(action string) (tea.Model, tea.Cmd) {
 		e.mode = ViewNormal
 		return e, nil
 
-
 	case "keybindings":
 		e.mode = ViewKeybindings
 		e.kbCursor = 0
@@ -2292,6 +2496,7 @@ func (e *Editor) updateSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (e *Editor) replaceCurrent() {
+	e.pushUndo()
 	tab := e.currentTab()
 	buf := e.currentBuf()
 
@@ -2365,6 +2570,7 @@ func (e *Editor) replaceCurrent() {
 }
 
 func (e *Editor) replaceAll() {
+	e.pushUndo()
 	q := e.searchQuery
 	if q == "" {
 		q = e.searchInput.Value()
@@ -2473,11 +2679,15 @@ func (e *Editor) updateSaveAs(msg tea.Msg) (tea.Model, tea.Cmd) {
 						e.showMessage("Renamed to: " + filepath.Base(path))
 						e.fileTree = NewFileTree(e.fileTreeRoot)
 						e.buildFileList()
-						// Update any open tab pointing to old path
+						// Reload buffer from new path to prevent writing stale content
 						for i := range e.tabs {
 							if e.tabs[i].Buf.FilePath == e.pendingRename {
-								e.tabs[i].Buf.FilePath = path
-								e.tabs[i].Buf.Name = filepath.Base(path)
+								if newBuf, err := buffer.Open(path); err == nil {
+									e.tabs[i].Buf = newBuf
+								} else {
+									e.tabs[i].Buf.FilePath = path
+									e.tabs[i].Buf.Name = filepath.Base(path)
+								}
 							}
 						}
 					}
@@ -2712,12 +2922,9 @@ func (e *Editor) restoreSession() {
 	e.zoomLevel = state.ZoomLevel
 	e.fileTreeVisible = state.SidebarOpen
 
-	if state.WindowWidth > 0 {
-		e.width = state.WindowWidth
-	}
-	if state.WindowHeight > 0 {
-		e.height = state.WindowHeight
-	}
+	// Intentionally do NOT restore WindowWidth/WindowHeight: the live terminal
+	// drives layout via WindowSizeMsg, and applying stale saved dimensions
+	// would clip the editor until the user manually resized.
 
 	e.tabs = nil
 	for _, ts := range state.Tabs {
@@ -2777,6 +2984,7 @@ func (e *Editor) clampHelpScroll() {
 	if e.helpScroll < 0 {
 		e.helpScroll = 0
 	}
+	// Max clamping is done in renderHelpOverlay where we know the content height
 }
 
 func (e *Editor) getWelcomeActions() []string {
@@ -2804,6 +3012,14 @@ func (e *Editor) welcomeItemAction(cursor int) string {
 }
 
 func (e *Editor) updateWelcome(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Clamp welcome cursor to valid range (menu items depend on hasSession/tabs)
+	if e.welcomeCursor >= e.welcomeItemCount() {
+		e.welcomeCursor = e.welcomeItemCount() - 1
+	}
+	if e.welcomeCursor < 0 {
+		e.welcomeCursor = 0
+	}
+
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -2901,8 +3117,14 @@ func (e *Editor) updateWelcome(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (e *Editor) updateUnsavedPrompt(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if msg, ok := msg.(tea.KeyMsg); ok {
-		switch strings.ToLower(msg.String()) {
+		s := msg.String()
+		switch s {
 		case "y":
+			// For deletes: skipping the save doesn't change the outcome of the
+			// deletion itself. Just proceed.
+			if e.pendingAction == ActionDelete {
+				return e.executePendingAction()
+			}
 			// Save and continue
 			tab := &e.tabs[e.unsavedTabIdx]
 			if tab.Buf.FilePath == "" {
@@ -2915,6 +3137,10 @@ func (e *Editor) updateUnsavedPrompt(msg tea.Msg) (tea.Model, tea.Cmd) {
 			e.saveTab(e.unsavedTabIdx)
 			return e.executePendingAction()
 		case "n":
+			// For deletes: proceed with delete even if other tabs are dirty.
+			if e.pendingAction == ActionDelete {
+				return e.executePendingAction()
+			}
 			// Discard and continue
 			if e.unsavedTabIdx >= 0 && e.unsavedTabIdx < len(e.tabs) {
 				e.tabs[e.unsavedTabIdx].Buf.Modified = false
@@ -2924,6 +3150,7 @@ func (e *Editor) updateUnsavedPrompt(msg tea.Msg) (tea.Model, tea.Cmd) {
 			e.mode = ViewNormal
 			e.pendingAction = ActionNone
 			e.postSaveAction = ActionNone
+			e.pendingDelete = ""
 		}
 	}
 	return e, nil
@@ -3096,6 +3323,10 @@ func (e *Editor) updateFileTree(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if node == nil || node.Depth == 0 {
 				return e, nil
 			}
+			if !e.withinProject(node.Path) {
+				e.showMessage("Cannot rename: path is outside the project")
+				return e, nil
+			}
 			e.mode = ViewSaveAs
 			e.saveAsInput.SetValue(node.Path)
 			e.saveAsInput.Focus()
@@ -3105,6 +3336,10 @@ func (e *Editor) updateFileTree(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "d":
 			node := e.fileTree.SelectedNode()
 			if node == nil || node.Depth == 0 {
+				return e, nil
+			}
+			if !e.withinProject(node.Path) {
+				e.showMessage("Cannot delete: path is outside the project")
 				return e, nil
 			}
 			e.pendingDelete = node.Path
@@ -3132,6 +3367,10 @@ func (e *Editor) updateFileTreeFilter(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "esc":
+			e.fileTree.Filter = ""
+			e.fileTreeFilterInput.SetValue("")
+			e.fileTree.Flatten()
+			e.fileTree.Cursor = 0
 			e.mode = ViewFileTree
 			e.fileTreeFilterInput.Blur()
 			return e, nil
@@ -3271,7 +3510,7 @@ func (e *Editor) triggerGlobalSearch() {
 	opts := searcher.Options{
 		Root:          e.fileTreeRoot,
 		Query:         query,
-		CaseSensitive: false,
+		CaseSensitive: e.caseSensitive,
 		IgnoreDirs:    []string{".git", "node_modules", "vendor", "dist", "build"},
 	}
 
@@ -3397,17 +3636,40 @@ func (e *Editor) executePendingAction() (tea.Model, tea.Cmd) {
 
 	case ActionDelete:
 		if e.pendingDelete != "" {
-			err := os.Remove(e.pendingDelete)
-			if err != nil {
-				// Try removing directory
-				err = os.RemoveAll(e.pendingDelete)
-			}
-			if err != nil {
-				e.showMessage("Delete failed: " + err.Error())
+			// Defence-in-depth: refuse paths outside the workspace root.
+			if !e.withinProject(e.pendingDelete) {
+				e.showMessage("Delete blocked: path is outside the project")
 			} else {
-				e.showMessage("Deleted: " + filepath.Base(e.pendingDelete))
-				e.fileTree = NewFileTree(e.fileTreeRoot)
-				e.buildFileList()
+				// Close any open tab for the deleted path so we don't leak it.
+				closed := false
+				for i := 0; i < len(e.tabs); i++ {
+					if e.tabs[i].Buf.FilePath == e.pendingDelete {
+						e.tabs = append(e.tabs[:i], e.tabs[i+1:]...)
+						if e.activeTab >= len(e.tabs) {
+							e.activeTab = len(e.tabs) - 1
+						}
+						if e.activeTab < 0 {
+							e.activeTab = 0
+						}
+						closed = true
+						i--
+					}
+				}
+				if closed && len(e.tabs) == 0 {
+					e.tabs = []Tab{{Buf: buffer.New()}}
+					e.activeTab = 0
+				}
+				err := os.Remove(e.pendingDelete)
+				if err != nil {
+					err = os.RemoveAll(e.pendingDelete)
+				}
+				if err != nil {
+					e.showMessage("Delete failed: " + err.Error())
+				} else {
+					e.showMessage("Deleted: " + filepath.Base(e.pendingDelete))
+					e.fileTree = NewFileTree(e.fileTreeRoot)
+					e.buildFileList()
+				}
 			}
 			e.pendingDelete = ""
 		}
@@ -3428,7 +3690,63 @@ func (e *Editor) saveTab(idx int) {
 	err := tab.Buf.Save()
 	if err != nil {
 		e.showMessage("Save failed: " + err.Error())
+	} else {
+		e.notifyLspChange(tab.Buf)
 	}
+}
+
+// autoSaveDirtyTabs saves any modified tabs that have a known file path.
+// It runs silently — failures are still surfaced via showMessage but
+// never block the editor.
+func (e *Editor) autoSaveDirtyTabs() {
+	for i := range e.tabs {
+		tab := &e.tabs[i]
+		if !tab.Buf.Modified || tab.Buf.FilePath == "" {
+			continue
+		}
+		if err := tab.Buf.Save(); err == nil {
+			e.notifyLspChange(tab.Buf)
+		}
+	}
+}
+
+// notifyLspChange sends a textDocument/didChange notification to the LSP
+// client registered for the buffer's language, if any. It is a no-op
+// when LSP is disabled or no client is registered.
+func (e *Editor) notifyLspChange(buf *buffer.Buffer) {
+	if buf == nil || buf.FilePath == "" {
+		return
+	}
+	e.lspClientsMu.Lock()
+	client, ok := e.lspClients[buf.Language]
+	e.lspClientsMu.Unlock()
+	if !ok {
+		return
+	}
+	_ = client.DidChange(buf.FilePath, buf.Language, strings.Join(buf.Lines, "\n"))
+}
+
+// pushRecent records a path in the editor's most-recently-used list
+// (de-duplicated, capped to 25 entries).
+func (e *Editor) pushRecent(path string) {
+	if path == "" {
+		return
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return
+	}
+	out := []string{abs}
+	for _, p := range e.recentFiles {
+		if p == abs {
+			continue
+		}
+		out = append(out, p)
+		if len(out) >= 25 {
+			break
+		}
+	}
+	e.recentFiles = out
 }
 
 func (e *Editor) updateSuggestions() {
@@ -3496,13 +3814,19 @@ func (e *Editor) acceptSuggestion(suggestion string) {
 }
 
 // safeWriteClipboard wraps clipboard.WriteAll with panic recovery
-// (known issue on Windows with NUL bytes and special characters)
+// (known issue on Windows with NUL bytes and special characters) and
+// strips stray NUL bytes that some hosts reject.
 func safeWriteClipboard(text string) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("clipboard panic: %v", r)
 		}
 	}()
+	// Strip embedded NUL bytes — Windows hosts reject them and may panic.
+	text = strings.ReplaceAll(text, "\x00", "")
+	if text == "" {
+		return nil
+	}
 	return clipboard.WriteAll(text)
 }
 

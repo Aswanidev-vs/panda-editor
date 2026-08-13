@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Request represents a JSON-RPC request.
@@ -40,6 +41,11 @@ type Notification struct {
 	Params  interface{} `json:"params,omitempty"`
 }
 
+// DefaultCallTimeout caps how long Call waits for a response. Some servers
+// (e.g. misconfigured or absent `gopls`) never reply, and we'd otherwise
+// block the editor's startup goroutine forever.
+const DefaultCallTimeout = 5 * time.Second
+
 // Client is an LSP client.
 type Client struct {
 	cmd      *exec.Cmd
@@ -49,6 +55,7 @@ type Client struct {
 	mu       sync.Mutex
 	pending  map[int]chan *Response
 	onNotif  func(method string, params json.RawMessage)
+	closed   bool
 }
 
 // NewClient starts an LSP server and returns a client.
@@ -82,7 +89,6 @@ func NewClient(serverPath string, args []string, onNotif func(string, json.RawMe
 func (c *Client) readLoop() {
 	reader := bufio.NewReader(c.stdout)
 	for {
-		// Read headers
 		var contentLength int
 		for {
 			line, err := reader.ReadString('\n')
@@ -102,14 +108,12 @@ func (c *Client) readLoop() {
 			continue
 		}
 
-		// Read body
 		body := make([]byte, contentLength)
 		_, err := io.ReadFull(reader, body)
 		if err != nil {
 			return
 		}
 
-		// Parse message
 		var msg struct {
 			ID     *int            `json:"id"`
 			Method string          `json:"method"`
@@ -121,7 +125,6 @@ func (c *Client) readLoop() {
 		}
 
 		if msg.ID != nil {
-			// Response
 			c.mu.Lock()
 			ch, ok := c.pending[*msg.ID]
 			delete(c.pending, *msg.ID)
@@ -133,7 +136,6 @@ func (c *Client) readLoop() {
 				ch <- &resp
 			}
 		} else if msg.Method != "" {
-			// Notification
 			if c.onNotif != nil {
 				c.onNotif(msg.Method, msg.Params)
 			}
@@ -141,8 +143,13 @@ func (c *Client) readLoop() {
 	}
 }
 
+// Call sends a JSON-RPC request and waits for the response, up to DefaultCallTimeout.
 func (c *Client) Call(method string, params interface{}) (*Response, error) {
 	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return nil, fmt.Errorf("lsp: client is closed")
+	}
 	c.idCounter++
 	id := c.idCounter
 	ch := make(chan *Response, 1)
@@ -163,7 +170,15 @@ func (c *Client) Call(method string, params interface{}) (*Response, error) {
 		return nil, err
 	}
 
-	return <-ch, nil
+	select {
+	case resp := <-ch:
+		return resp, nil
+	case <-time.After(DefaultCallTimeout):
+		c.mu.Lock()
+		delete(c.pending, id)
+		c.mu.Unlock()
+		return nil, fmt.Errorf("lsp: call %q timed out after %s", method, DefaultCallTimeout)
+	}
 }
 
 func (c *Client) Notify(method string, params interface{}) error {
@@ -185,6 +200,9 @@ func (c *Client) send(v interface{}) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.closed {
+		return fmt.Errorf("lsp: client is closed")
+	}
 	if _, err := c.stdin.Write([]byte(header)); err != nil {
 		return err
 	}
@@ -195,6 +213,16 @@ func (c *Client) send(v interface{}) error {
 }
 
 func (c *Client) Close() {
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return
+	}
+	c.closed = true
 	c.stdin.Close()
-	c.cmd.Process.Kill()
+	cmd := c.cmd
+	c.mu.Unlock()
+	if cmd != nil && cmd.Process != nil {
+		_ = cmd.Process.Kill()
+	}
 }

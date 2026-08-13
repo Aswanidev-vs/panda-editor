@@ -109,6 +109,13 @@ func (e *Editor) renderTabBar() string {
 		Width(e.width).
 		Height(1)
 
+	// In split mode we may have two "active" tabs (left and right). Show
+	// both highlighted so the user can see which buffer lives in each pane.
+	activeTabs := map[int]bool{e.activeTab: true}
+	if e.splitActive {
+		activeTabs[e.rightTab] = true
+	}
+
 	for i, tab := range e.tabs {
 		icon := getFileIcon(tab.Buf.Language)
 		name := tab.Buf.Name
@@ -123,7 +130,7 @@ func (e *Editor) renderTabBar() string {
 		label := prefix + icon + " " + name + " ✕"
 
 		var tabStyle lipgloss.Style
-		if i == e.activeTab {
+		if activeTabs[i] {
 			tabStyle = lipgloss.NewStyle().
 				Background(t.TabActiveBg).
 				Foreground(t.TabActiveFg).
@@ -143,7 +150,8 @@ func (e *Editor) renderTabBar() string {
 
 		// Tab separator
 		if i < len(e.tabs)-1 {
-			sb.WriteString(lipgloss.NewStyle().Background(t.TitleBar).Foreground(t.Border).Render("│"))
+			sepStyle := lipgloss.NewStyle().Background(t.TitleBar).Foreground(t.Border)
+			sb.WriteString(sepStyle.Render("│"))
 		}
 	}
 
@@ -226,7 +234,31 @@ func (e *Editor) renderFileTree() string {
 	treeWidth := e.fileTree.Width
 	treeHeight := e.editorHeight()
 
-	e.fileTree.AdjustScroll(treeHeight - 2)
+	headerHeight := 0
+	header := ""
+	if e.mode == ViewFileTreeFilter || e.fileTree.Filter != "" {
+		filterStyle := lipgloss.NewStyle().
+			Background(t.SidebarBg).
+			Foreground(t.Accent).
+			PaddingLeft(1).
+			PaddingTop(1).
+			Bold(true)
+		filterText := " / " + e.fileTreeFilterInput.View()
+		if e.mode != ViewFileTreeFilter {
+			filterText = " / " + e.fileTree.Filter
+		}
+		header = filterStyle.Render(filterText)
+		headerHeight = 2
+	}
+
+	// The list area is treeHeight minus the title+separator (2 rows) and the
+	// optional filter bar. Use the same value for both AdjustScroll and Render
+	// so the cursor never drifts past the visible bottom edge.
+	listHeight := treeHeight - 2 - headerHeight
+	if listHeight < 1 {
+		listHeight = 1
+	}
+	e.fileTree.AdjustScroll(listHeight)
 
 	style := lipgloss.NewStyle().
 		Background(t.SidebarBg).
@@ -235,20 +267,7 @@ func (e *Editor) renderFileTree() string {
 		Border(lipgloss.NormalBorder(), false, true, false, false).
 		BorderForeground(t.Border)
 
-	header := ""
-	headerHeight := 0
-	if e.mode == ViewFileTreeFilter || e.fileTree.Filter != "" {
-		filterStyle := lipgloss.NewStyle().
-			Background(t.SidebarBg).
-			Foreground(t.Accent).
-			PaddingLeft(1).
-			PaddingTop(1).
-			Bold(true)
-		header = filterStyle.Render(" / " + e.fileTreeFilterInput.View())
-		headerHeight = 2
-	}
-
-	content := e.fileTree.Render(treeHeight - 1 - headerHeight)
+	content := e.fileTree.Render(listHeight + 2)
 
 	// Add footer hint
 	hintStyle := lipgloss.NewStyle().
@@ -259,7 +278,7 @@ func (e *Editor) renderFileTree() string {
 		PaddingTop(0).
 		Width(treeWidth)
 
-	footer := hintStyle.Render("G/↑↓ Enter /:Filter")
+	footer := hintStyle.Render("↑↓ Navigate  Enter Open  / Filter  Space Select")
 
 	return style.Render(lipgloss.JoinVertical(lipgloss.Left, header, content, footer))
 }
@@ -272,13 +291,22 @@ func (e *Editor) renderEditor() string {
 		if rightTab < 0 || rightTab >= len(e.tabs) {
 			rightTab = e.activeTab
 		}
+		leftW := w / 2
+		rightW := w - leftW - 1
+		if rightW < 20 {
+			rightW = 20
+			leftW = w - 1 - rightW
+		}
+		if leftW < 0 {
+			leftW = 0
+		}
 		// Vertical separator
 		sep := lipgloss.NewStyle().
 			Foreground(theme.CurrentTheme.Border).
 			Height(e.editorHeight()).
 			Width(1).
 			Render("│")
-		return lipgloss.JoinHorizontal(lipgloss.Top, e.renderPanel(e.activeTab, w), sep, e.renderPanel(rightTab, w-1))
+		return lipgloss.JoinHorizontal(lipgloss.Top, e.renderPanel(e.activeTab, leftW), sep, e.renderPanel(rightTab, rightW))
 	}
 	return e.renderPanel(e.activeTab, e.editorWidth())
 }
@@ -298,6 +326,9 @@ func (e *Editor) renderPanel(tabIdx int, width int) string {
 	if lineNumberWidth < 4 {
 		lineNumberWidth = 4
 	}
+	// Keep the struct field in sync so ensureCursorVisible() computes the same
+	// gutter width for horizontal-scroll math.
+	e.lineNumberWidth = lineNumberWidth
 
 	var sb strings.Builder
 
@@ -452,22 +483,28 @@ func (e *Editor) renderPanel(tabIdx int, width int) string {
 				return false
 			}
 			absCol := col + scrollCol
-			q := e.searchQuery
-			lowerLine := strings.ToLower(lineContent)
-			lowerQ := strings.ToLower(q)
-			idx := 0
-			for {
-				pos := strings.Index(lowerLine[idx:], lowerQ)
-				if pos < 0 {
-					return false
+			lineRunes := []rune(lineContent)
+			qRunes := []rune(e.searchQuery)
+			if !e.caseSensitive {
+				lineRunes = []rune(strings.ToLower(lineContent))
+				qRunes = []rune(strings.ToLower(e.searchQuery))
+			}
+			if len(qRunes) == 0 {
+				return false
+			}
+			for i := 0; i+len(qRunes) <= len(lineRunes); i++ {
+				match := true
+				for j := 0; j < len(qRunes); j++ {
+					if lineRunes[i+j] != qRunes[j] {
+						match = false
+						break
+					}
 				}
-				absStart := idx + pos
-				absEnd := absStart + utf8.RuneCountInString(q)
-				if absCol >= absStart && absCol < absEnd {
+				if match && absCol >= i && absCol < i+len(qRunes) {
 					return true
 				}
-				idx = absStart + 1
 			}
+			return false
 		}
 
 		isDiagnostic := func(col int) bool {
@@ -476,13 +513,17 @@ func (e *Editor) renderPanel(tabIdx int, width int) string {
 			}
 			absCol := col + scrollCol
 			for _, d := range diags {
+				// LSP positions are UTF-16 code units; CursorCol is a rune
+				// index, so convert before comparing.
+				startCh := utf16ToRune(lineContent, d.Range.Start.Character)
+				endCh := utf16ToRune(lineContent, d.Range.End.Character)
 				if lineNum == d.Range.Start.Line && lineNum == d.Range.End.Line {
-					if absCol >= d.Range.Start.Character && absCol < d.Range.End.Character {
+					if absCol >= startCh && absCol < endCh {
 						return true
 					}
-				} else if lineNum == d.Range.Start.Line && absCol >= d.Range.Start.Character {
+				} else if lineNum == d.Range.Start.Line && absCol >= startCh {
 					return true
-				} else if lineNum == d.Range.End.Line && absCol < d.Range.End.Character {
+				} else if lineNum == d.Range.End.Line && absCol < endCh {
 					return true
 				} else if lineNum > d.Range.Start.Line && lineNum < d.Range.End.Line {
 					return true
@@ -491,45 +532,56 @@ func (e *Editor) renderPanel(tabIdx int, width int) string {
 			return false
 		}
 
-		// Syntax highlight the visible portion
-		visibleStr := string(visibleRunes)
-		visibleHighlighted, bcState := highlight.HighlightLine(visibleStr, buf.Language, inBlockComment)
+		// Highlight the full line (not just the visible slice) so the
+		// block-comment state stays correct when the /* opener is scrolled off
+		// the left edge. The resulting token styles are then mapped onto the
+		// visible rune window [scrollCol, endCol).
+		fullSpans, bcState := highlight.HighlightLine(lineContent, buf.Language, inBlockComment)
 		inBlockComment = bcState
+
+		styleAt := make([]lipgloss.Style, len(visibleRunes))
+		pos := 0
+		for _, span := range fullSpans {
+			for range []rune(span.Text) {
+				if pos >= scrollCol && pos < endCol {
+					styleAt[pos-scrollCol] = highlight.TokenToStyle(span.Token)
+				}
+				pos++
+			}
+		}
 
 		charIdx := 0
 		dispWidth := 0
-		for _, span := range visibleHighlighted {
-			style := highlight.TokenToStyle(span.Token)
-			for _, r := range span.Text {
-				colIdx := charIdx
-				if isSelected(colIdx) {
-					style = lipgloss.NewStyle().Background(t.Selection).Foreground(t.Fg)
-				} else if isSearchMatch(colIdx) {
-					style = lipgloss.NewStyle().Background(t.Accent).Foreground(t.Bg)
-				} else if isDiagnostic(colIdx) {
-					style = style.Foreground(t.Error).Underline(true)
-				}
-
-				rw := lipgloss.Width(string(r))
-				// Cursor or Matching Bracket
-				if isActive && lineNum == tab.CursorLine && colIdx+scrollCol == tab.CursorCol {
-					cursorStyle := lipgloss.NewStyle().
-						Background(t.Cursor).
-						Foreground(t.Bg).
-						Bold(true)
-					sb.WriteString(cursorStyle.Render(string(r)))
-				} else if isActive && lineNum == matchL && colIdx+scrollCol == matchC {
-					bracketStyle := lipgloss.NewStyle().
-						Background(t.Accent).
-						Foreground(t.Bg).
-						Bold(true)
-					sb.WriteString(bracketStyle.Render(string(r)))
-				} else {
-					sb.WriteString(baseStyle.Copy().Inherit(style).Render(string(r)))
-				}
-				charIdx++
-				dispWidth += rw
+		for _, r := range visibleRunes {
+			colIdx := charIdx
+			style := styleAt[colIdx]
+			if isSelected(colIdx) {
+				style = lipgloss.NewStyle().Background(t.Selection).Foreground(t.Fg)
+			} else if isSearchMatch(colIdx) {
+				style = lipgloss.NewStyle().Background(t.Accent).Foreground(t.Bg)
+			} else if isDiagnostic(colIdx) {
+				style = style.Foreground(t.Error).Underline(true)
 			}
+
+			rw := lipgloss.Width(string(r))
+			// Cursor or Matching Bracket
+			if isActive && lineNum == tab.CursorLine && colIdx+scrollCol == tab.CursorCol {
+				cursorStyle := lipgloss.NewStyle().
+					Background(t.Cursor).
+					Foreground(t.Bg).
+					Bold(true)
+				sb.WriteString(cursorStyle.Render(string(r)))
+			} else if isActive && lineNum == matchL && colIdx+scrollCol == matchC {
+				bracketStyle := lipgloss.NewStyle().
+					Background(t.Accent).
+					Foreground(t.Bg).
+					Bold(true)
+				sb.WriteString(bracketStyle.Render(string(r)))
+			} else {
+				sb.WriteString(baseStyle.Copy().Inherit(style).Render(string(r)))
+			}
+			charIdx++
+			dispWidth += rw
 		}
 
 		// Cursor at end of line
@@ -601,6 +653,12 @@ func (e *Editor) renderStatusBar() string {
 		modeName = " 📂 FOLDER "
 	case ViewGlobalSearch:
 		modeName = " 🔍 GLOBAL "
+	case ViewFileTree, ViewFileTreeFilter:
+		modeName = " 📂 EXPLORER "
+	case ViewUnsavedPrompt:
+		modeName = " ⚠ UNSAVED "
+	case ViewSettings:
+		modeName = " ⚙ SETTINGS "
 	default:
 		modeName = " ✎ EDIT "
 	}
@@ -728,7 +786,7 @@ func (e *Editor) renderFinderOverlay(bg string) string {
 	} else if e.finderCursor >= e.finderScroll+visibleResults {
 		e.finderScroll = e.finderCursor - visibleResults + 1
 	}
-	
+
 	start := e.finderScroll
 	end := start + visibleResults
 	if end > len(e.finderResults) {
@@ -873,7 +931,7 @@ func (e *Editor) renderCommandOverlay(bg string) string {
 	} else if e.commandCursor >= e.commandScroll+visibleResults {
 		e.commandScroll = e.commandCursor - visibleResults + 1
 	}
-	
+
 	start := e.commandScroll
 	end := start + visibleResults
 	if end > len(e.commandResults) {
@@ -897,7 +955,7 @@ func (e *Editor) renderCommandOverlay(bg string) string {
 		iconStr := lipgloss.NewStyle().Width(3).Render(icon)
 		nameStr := nameStyle.Render(cmd.Name)
 		catStr := catStyle.Render(cmd.Category)
-		
+
 		line := fmt.Sprintf(" %s %s %s", iconStr, nameStr, catStr)
 		if i == e.commandCursor {
 			sb.WriteString(lipgloss.NewStyle().Background(t.Accent).Width(width - 4).Render(line))
@@ -983,15 +1041,14 @@ func (e *Editor) renderSearchOverlay(bg string) string {
 			return ""
 		}
 		q := e.searchQuery
-		if !e.caseSensitive {
-			q = strings.ToLower(q)
-		}
+		cs := e.caseSensitive
 		for i := 0; i < buf.LineCount(); i++ {
 			line := buf.GetLine(i)
-			if !e.caseSensitive {
-				line = strings.ToLower(line)
+			if cs {
+				matchCount += strings.Count(line, q)
+			} else {
+				matchCount += strings.Count(strings.ToLower(line), strings.ToLower(q))
 			}
-			matchCount += strings.Count(line, q)
 		}
 	}
 
@@ -1255,7 +1312,7 @@ func (e *Editor) renderHelpOverlay(bg string) string {
 		sb.WriteString(contentLines[i])
 		sb.WriteString("\n")
 	}
-	
+
 	// Fill remaining space if any
 	for i := len(contentLines) - e.helpScroll; i < visibleHeight; i++ {
 		sb.WriteString("\n")
@@ -1740,7 +1797,7 @@ func toCells(s string) []string {
 			// Add styled character
 			cell := currentStyle + char + "\x1b[0m"
 			cells = append(cells, cell)
-			
+
 			// Handle wide characters by adding placeholders
 			for k := 1; k < w; k++ {
 				cells = append(cells, "") // Marker for occupied column
@@ -1763,29 +1820,44 @@ func overlayAnsi(bg, fg string, x int) string {
 
 	for i, cell := range fgCells {
 		idx := x + i
-		if idx >= 0 && idx < 2000 { // Safety limit
+		if idx < 0 {
+			continue
+		}
+		// Placeholder cell (right half of a wide foreground char): the left
+		// half is placed separately, so keep its slot without running the
+		// wide-char clearing logic (which would otherwise erase a background
+		// glyph the overlay shouldn't touch).
+		if cell == "" {
 			if idx < len(bgCells) {
-				// If we overwrite a cell, we must handle multi-column character boundaries
-				
-				// 1. If we overwrite a placeholder, we must clear the parent character
-				if bgCells[idx] == "" && idx > 0 {
-					for p := idx - 1; p >= 0; p-- {
-						if bgCells[p] != "" {
-							bgCells[p] = " " // Replace parent with space
-							break
-						}
+				bgCells[idx] = ""
+			} else {
+				bgCells = append(bgCells, "")
+			}
+			continue
+		}
+		if idx < len(bgCells) {
+			// If we overwrite a placeholder, we must clear the parent character
+			if bgCells[idx] == "" && idx > 0 {
+				for p := idx - 1; p >= 0; p-- {
+					if bgCells[p] != "" {
+						bgCells[p] = " " // Replace parent with space
+						break
 					}
 				}
-
-				// 2. If we overwrite a parent of placeholders, we must clear them
-				for p := idx + 1; p < len(bgCells) && bgCells[p] == ""; p++ {
-					bgCells[p] = " "
-				}
-
-				bgCells[idx] = cell
-			} else {
-				bgCells = append(bgCells, cell)
 			}
+
+			// 2. If we overwrite a parent of placeholders, we must clear them
+			for p := idx + 1; p < len(bgCells) && bgCells[p] == ""; p++ {
+				bgCells[p] = " "
+			}
+
+			bgCells[idx] = cell
+		} else {
+			// Pad with spaces up to idx so the cell lands in the right column.
+			for len(bgCells) < idx {
+				bgCells = append(bgCells, " ")
+			}
+			bgCells = append(bgCells, cell)
 		}
 	}
 
@@ -1798,6 +1870,35 @@ func overlayAnsi(bg, fg string, x int) string {
 	}
 	return sb.String()
 }
+
+// utf16ToRune converts a UTF-16 code-unit offset (used by LSP positions) into
+// a rune index within s. Astral characters (e.g. emoji) count as 2 UTF-16
+// units but a single rune, so a naive offset would otherwise be wrong.
+func utf16ToRune(s string, offset int) int {
+	runes := []rune(s)
+	count := 0
+	for i, r := range runes {
+		if count >= offset {
+			return i
+		}
+		if r > 0xFFFF {
+			count += 2
+		} else {
+			count += 1
+		}
+	}
+	return len(runes)
+}
+
+func (e *Editor) lineTextForPath(path string, line int) string {
+	for i := range e.tabs {
+		if e.tabs[i].Buf.FilePath == path {
+			return e.tabs[i].Buf.GetLine(line)
+		}
+	}
+	return ""
+}
+
 func (e *Editor) renderGlobalSearchOverlay(bg string) string {
 	t := theme.CurrentTheme
 	width := 80
@@ -1841,7 +1942,7 @@ func (e *Editor) renderGlobalSearchOverlay(bg string) string {
 	} else if e.globalSearchCursor >= e.globalSearchScroll+visibleResults {
 		e.globalSearchScroll = e.globalSearchCursor - visibleResults + 1
 	}
-	
+
 	start := e.globalSearchScroll
 	end := start + visibleResults
 	if end > len(e.globalSearchResults) {
@@ -1861,18 +1962,25 @@ func (e *Editor) renderGlobalSearchOverlay(bg string) string {
 
 		line := pStr + lStr + " " + cStr
 		if lipgloss.Width(line) > width-4 {
-			// Truncate by visual width, not byte offset, to avoid corrupting ANSI sequences
+			// Truncate by visual width. Walk bytes carefully so we don't
+			// split a multi-byte UTF-8 rune or an ANSI escape sequence.
 			w := width - 7
 			if w < 0 {
 				w = 0
 			}
-			truncated := make([]byte, 0, w)
+			var truncated []byte
 			col := 0
-			for i := 0; i < len(line) && col < w; i++ {
+			i := 0
+			for i < len(line) && col < w {
 				b := line[i]
 				if b == 0x1b {
 					// Skip ANSI escape sequence
 					for i < len(line) && line[i] != 'm' {
+						truncated = append(truncated, line[i])
+						i++
+					}
+					if i < len(line) {
+						truncated = append(truncated, line[i])
 						i++
 					}
 					continue
@@ -1880,20 +1988,34 @@ func (e *Editor) renderGlobalSearchOverlay(bg string) string {
 				if b < 0x80 {
 					truncated = append(truncated, b)
 					col++
+					i++
 				} else if b < 0xC0 {
 					truncated = append(truncated, b)
-				} else if b < 0xE0 {
-					truncated = append(truncated, b, line[i+1])
 					i++
-					col++
+				} else if b < 0xE0 {
+					if i+1 < len(line) {
+						truncated = append(truncated, b, line[i+1])
+						i += 2
+						col++
+					} else {
+						i++
+					}
 				} else if b < 0xF0 {
-					truncated = append(truncated, b, line[i+1], line[i+2])
-					i += 2
-					col++
+					if i+2 < len(line) {
+						truncated = append(truncated, b, line[i+1], line[i+2])
+						i += 3
+						col++
+					} else {
+						i++
+					}
 				} else {
-					truncated = append(truncated, b, line[i+1], line[i+2], line[i+3])
-					i += 3
-					col++
+					if i+3 < len(line) {
+						truncated = append(truncated, b, line[i+1], line[i+2], line[i+3])
+						i += 4
+						col++
+					} else {
+						i++
+					}
 				}
 			}
 			line = string(truncated) + "..."
@@ -1939,14 +2061,18 @@ func (e *Editor) getDiagnosticAt(path string, line, col int) *lsp.Diagnostic {
 		return nil
 	}
 
+	lineStr := e.lineTextForPath(path, line)
 	for _, d := range diags {
+		// LSP positions are UTF-16 code units; col is a rune index.
+		startCh := utf16ToRune(lineStr, d.Range.Start.Character)
+		endCh := utf16ToRune(lineStr, d.Range.End.Character)
 		if line == d.Range.Start.Line && line == d.Range.End.Line {
-			if col >= d.Range.Start.Character && col < d.Range.End.Character {
+			if col >= startCh && col < endCh {
 				return &d
 			}
-		} else if line == d.Range.Start.Line && col >= d.Range.Start.Character {
+		} else if line == d.Range.Start.Line && col >= startCh {
 			return &d
-		} else if line == d.Range.End.Line && col < d.Range.End.Character {
+		} else if line == d.Range.End.Line && col < endCh {
 			return &d
 		} else if line > d.Range.Start.Line && line < d.Range.End.Line {
 			return &d
@@ -1978,10 +2104,13 @@ func (e *Editor) renderDiagnosticHint(bg string, diag *lsp.Diagnostic) string {
 	if lnWidth < 4 {
 		lnWidth = 4
 	}
-	colInView := tab.CursorCol - tab.ScrollCol + lnWidth + 3
+	colInView := tab.CursorCol - tab.ScrollCol + lnWidth + 2
 
 	// Clamp positions
 	x := colInView
+	if e.fileTreeVisible {
+		x += e.fileTree.Width + 1
+	}
 	y := lineInView + 2 // Show 1 line below cursor
 
 	if y+lipgloss.Height(overlay) >= e.height-2 {
@@ -2029,10 +2158,25 @@ func (e *Editor) renderAutocompleteOverlay(bg string) string {
 	}
 	x := lnWidth + 2 + tab.CursorCol - tab.ScrollCol
 	if e.fileTreeVisible {
-		x += e.fileTree.Width
+		x += e.fileTree.Width + 1
 	}
-	x += 5 // minimap width
 	y := tab.CursorLine - tab.ScrollLine + 2 // +1 for tab bar, +1 for offset
+
+	// Clamp to screen edges
+	oW := lipgloss.Width(overlay)
+	oH := lipgloss.Height(overlay)
+	if x+oW >= e.width {
+		x = e.width - oW - 1
+	}
+	if x < 0 {
+		x = 0
+	}
+	if y+oH >= e.height-1 {
+		y = e.height - oH - 2
+	}
+	if y < 0 {
+		y = 0
+	}
 
 	return placeOverlay(x, y, overlay, bg)
 }
@@ -2072,7 +2216,7 @@ func (e *Editor) renderMinimap() string {
 		}
 
 		style := lipgloss.NewStyle().Foreground(t.Comment)
-		if lineIdx >= tab.ScrollLine && lineIdx < tab.ScrollLine+height {
+		if lineIdx >= tab.ScrollLine && lineIdx <= tab.ScrollLine+height-1 {
 			style = style.Foreground(t.Accent)
 		}
 		sb.WriteString(style.Render(dots))
@@ -2092,7 +2236,6 @@ func (e *Editor) renderMinimap() string {
 func (e *Editor) renderSettingsOverlay(bg string) string {
 	t := theme.CurrentTheme
 
-	// Build settings display lines
 	var items []string
 
 	items = append(items, lipgloss.NewStyle().Foreground(t.Accent).Bold(true).Render("── Editor ──"))
@@ -2120,22 +2263,33 @@ func (e *Editor) renderSettingsOverlay(bg string) string {
 	items = append(items, fmt.Sprintf("  LSP Enabled:    %s", lspEnabled))
 	items = append(items, fmt.Sprintf("  Session Save:   %v", config.BoolVal(e.config.Behavior.SessionSave, true)))
 
+	if len(e.recentFiles) > 0 {
+		items = append(items, "")
+		items = append(items, lipgloss.NewStyle().Foreground(t.Accent).Bold(true).Render("── Recent Files ──"))
+		limit := len(e.recentFiles)
+		if limit > 5 {
+			limit = 5
+		}
+		for i := 0; i < limit; i++ {
+			items = append(items, fmt.Sprintf("  %s", e.recentFiles[i]))
+		}
+	}
+
 	items = append(items, "")
 	items = append(items, lipgloss.NewStyle().Foreground(t.Comment).Italic(true).Render("  Press 'o' to open config file"))
 	items = append(items, lipgloss.NewStyle().Foreground(t.Comment).Italic(true).Render("  Press 'r' to reload config"))
 	items = append(items, lipgloss.NewStyle().Foreground(t.Comment).Italic(true).Render("  Press esc to close"))
 
-	// Render the overlay
-
-	var sb strings.Builder
-	sb.WriteString(lipgloss.NewStyle().
+	content := strings.Join(items, "\n")
+	overlayStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(t.Accent).
 		Background(t.OverlayBg).
 		Foreground(t.Fg).
-		Width(50).
-		Padding(1, 2).
-		Render(strings.Join(items, "\n")))
+		Width(56).
+		Padding(1, 2)
 
-	overlay := sb.String()
+	overlay := overlayStyle.Render(content)
 
 	oW := lipgloss.Width(overlay)
 	oH := lipgloss.Height(overlay)
@@ -2147,11 +2301,14 @@ func (e *Editor) renderTerminal() string {
 	h := e.termHeight
 	w := e.width
 
-	// Terminal border style
+	// Terminal border style. The explicit Height keeps the panel at exactly
+	// e.termHeight rows so it never overflows the space editorHeight() reserved
+	// for it (which would otherwise push the status bar off-screen).
 	borderStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(t.LineNum).
-		Width(w)
+		Width(w).
+		Height(h)
 
 	// Title area
 	title := " TERMINAL "
@@ -2163,7 +2320,7 @@ func (e *Editor) renderTerminal() string {
 	// Output area
 	var output string
 	if e.term != nil {
-		e.term.Resize(w-2, h-1)
+		e.term.Resize(w-2, h)
 		output = e.term.View()
 	} else {
 		output = "Press Ctrl+` to start terminal."
@@ -2173,7 +2330,7 @@ func (e *Editor) renderTerminal() string {
 	var inputBar string
 	if e.termFocused && e.term != nil && e.term.IsRunning() {
 		promptStyle := lipgloss.NewStyle().Foreground(t.Accent)
-		inputBar = "\n" + promptStyle.Render("$ ") + e.term.input + "█"
+		inputBar = "\n" + promptStyle.Render("$ ") + e.term.PromptView()[2:]
 	}
 
 	// Padding
