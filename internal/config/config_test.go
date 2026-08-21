@@ -1,8 +1,11 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -36,6 +39,29 @@ func TestDefaultConfigValid(t *testing.T) {
 	}
 	if _, ok := cfg.Lang["go"]; !ok {
 		t.Error("Default config should include go language entry")
+	}
+}
+
+// Regression: DefaultConfigJSON must emit ONE valid JSON document. It used
+// to concatenate the template twice around a note, producing invalid JSON.
+func TestDefaultConfigJSONIsValidAndRoundTrips(t *testing.T) {
+	doc := DefaultConfigJSON()
+	if !json.Valid([]byte(doc)) {
+		t.Fatalf("DefaultConfigJSON is not valid JSON:\n%s", doc)
+	}
+
+	var got Config
+	if err := json.Unmarshal([]byte(doc), &got); err != nil {
+		t.Fatalf("unmarshal into Config failed: %v", err)
+	}
+	want := DefaultConfig()
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("round-trip mismatch:\n got %+v\nwant %+v", got, want)
+	}
+
+	// The documentation note should survive, embedded as a JSON member.
+	if !strings.Contains(doc, "_comment") || !strings.Contains(doc, "custom_colors") {
+		t.Error("documentation note missing from generated document")
 	}
 }
 

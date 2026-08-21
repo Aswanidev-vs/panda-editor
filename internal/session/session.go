@@ -61,7 +61,32 @@ func SaveSession(state SessionState) error {
 		return err
 	}
 
-	return os.WriteFile(sessionFilePath(), data, 0o644)
+	// Write to a temp file in the same directory and rename over the target:
+	// a crash mid-write would truncate session.json, but the rename is
+	// atomic so readers only ever see a complete document.
+	tmp, err := os.CreateTemp(dir, "session-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	// No-op once the rename succeeded (the temp path no longer exists).
+	defer os.Remove(tmpName)
+
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	// Best-effort flush to disk before the swap so the rename never points
+	// at unflushed data.
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+
+	return os.Rename(tmpName, sessionFilePath())
 }
 
 func LoadSession() (SessionState, error) {

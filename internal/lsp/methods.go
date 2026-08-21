@@ -95,6 +95,19 @@ func (c *Client) DidChange(path, languageID, text string) error {
 	return c.Notify("textDocument/didChange", params)
 }
 
+// Shutdown sends the LSP `shutdown` request and waits for the server's
+// reply. Per the LSP lifecycle it must be followed by Exit before the
+// process is killed.
+func (c *Client) Shutdown() error {
+	_, err := c.Call("shutdown", nil)
+	return err
+}
+
+// Exit sends the LSP `exit` notification, telling the server to quit.
+func (c *Client) Exit() error {
+	return c.Notify("exit", nil)
+}
+
 // Diagnostics notification.
 type PublishDiagnosticsParams struct {
 	URI         string       `json:"uri"`

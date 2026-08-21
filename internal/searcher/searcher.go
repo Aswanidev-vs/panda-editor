@@ -2,6 +2,7 @@ package searcher
 
 import (
 	"bufio"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,6 +32,14 @@ type Options struct {
 
 // Search performs a multi-threaded search across files.
 func Search(opts Options, resultChan chan<- []SearchResult, doneChan chan<- bool) {
+	SearchCtx(context.Background(), opts, resultChan, doneChan)
+}
+
+// SearchCtx is Search with cancellation support: cancelling ctx stops the
+// walker and workers early, drops in-flight results, and closes doneChan
+// once everything has wound down (no goroutine is left writing to the
+// channels after that point).
+func SearchCtx(ctx context.Context, opts Options, resultChan chan<- []SearchResult, doneChan chan<- bool) {
 	go func() {
 		defer close(doneChan)
 
@@ -45,10 +54,17 @@ func Search(opts Options, resultChan chan<- []SearchResult, doneChan chan<- bool
 			go func() {
 				defer wg.Done()
 				for path := range files {
-					matches, err := grepFile(path, opts.Query, opts.CaseSensitive)
+					if ctx.Err() != nil {
+						continue // cancelled: drain the queue without working
+					}
+					matches, err := grepFile(ctx, path, opts.Query, opts.CaseSensitive)
 					if err == nil {
 						for _, m := range matches {
-							results <- m
+							select {
+							case results <- m:
+							case <-ctx.Done():
+								// Drop the rest rather than block forever.
+							}
 						}
 					}
 				}
@@ -62,12 +78,18 @@ func Search(opts Options, resultChan chan<- []SearchResult, doneChan chan<- bool
 			for res := range results {
 				batch = append(batch, res)
 				if len(batch) >= 20 {
-					resultChan <- batch
+					select {
+					case resultChan <- batch:
+					case <-ctx.Done():
+					}
 					batch = nil
 				}
 			}
 			if len(batch) > 0 {
-				resultChan <- batch
+				select {
+				case resultChan <- batch:
+				case <-ctx.Done():
+				}
 			}
 			collectorDone <- true
 		}()
@@ -76,6 +98,9 @@ func Search(opts Options, resultChan chan<- []SearchResult, doneChan chan<- bool
 		_ = filepath.Walk(opts.Root, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
 				return nil
+			}
+			if ctx.Err() != nil {
+				return filepath.SkipAll
 			}
 			if info.IsDir() {
 				name := info.Name()
@@ -93,7 +118,11 @@ func Search(opts Options, resultChan chan<- []SearchResult, doneChan chan<- bool
 			// Only search text files (rough check)
 			ext := strings.ToLower(filepath.Ext(path))
 			if isTextFile(ext) {
-				files <- path
+				select {
+				case files <- path:
+				case <-ctx.Done():
+					return filepath.SkipAll
+				}
 			}
 			return nil
 		})
@@ -105,7 +134,7 @@ func Search(opts Options, resultChan chan<- []SearchResult, doneChan chan<- bool
 	}()
 }
 
-func grepFile(path string, query string, caseSensitive bool) ([]SearchResult, error) {
+func grepFile(ctx context.Context, path string, query string, caseSensitive bool) ([]SearchResult, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -122,6 +151,9 @@ func grepFile(path string, query string, caseSensitive bool) ([]SearchResult, er
 	}
 
 	for scanner.Scan() {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		content := scanner.Text()
 		searchContent := content
 		if !caseSensitive {

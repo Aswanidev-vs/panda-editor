@@ -105,42 +105,11 @@ func DefaultConfig() Config {
 	}
 }
 
-// comment returns a JSON-commented default config for auto-generation.
+// DefaultConfigJSON returns the auto-generated default config.json as a
+// single valid JSON document. The explanatory note is embedded as a
+// "_comment" member, which json.Unmarshal ignores when decoding into
+// Config, so the output round-trips back to DefaultConfig.
 func DefaultConfigJSON() string {
-	minimap := true
-	lsp := true
-	clip := true
-	session := true
-	cfg := Config{
-		Editor: EditorSettings{
-			TabSize:             4,
-			RelativeLineNumbers: false,
-			AutoSaveInterval:    0,
-			Minimap:             &minimap,
-			WordWrap:            false,
-		},
-		Theme:  "Panda Dark",
-		Colors: nil,
-		Lang: map[string]PerLanguage{
-			"go":         {LSP: "gopls", TabSize: 4, FormatOnSave: true},
-			"python":     {LSP: "pylsp", TabSize: 4, FormatOnSave: false},
-			"typescript": {LSP: "typescript-language-server", TabSize: 2, FormatOnSave: true},
-			"javascript": {LSP: "typescript-language-server", TabSize: 2, FormatOnSave: true},
-			"rust":       {LSP: "rust-analyzer", TabSize: 4, FormatOnSave: true},
-		},
-		Keymap: nil,
-		Behavior: Behavior{
-			TerminalCmd:   "cmd",
-			LSPEnabled:    &lsp,
-			ClipboardSync: &clip,
-			SessionSave:   &session,
-		},
-	}
-	data, _ := json.MarshalIndent(cfg, "", "  ")
-	// Embed comments by prepending them as a string note
-	// (JSON doesn't support comments, so we add an info field)
-	commented := string(data)
-	// Insert a note at the beginning
 	note := "// Panda Editor Configuration\n" +
 		"// Edit this file to customize Panda Editor.\n" +
 		"// Changes take effect on save — use 'Reload Config' in the command palette.\n" +
@@ -156,7 +125,16 @@ func DefaultConfigJSON() string {
 		"//   tab_bg, tab_active_bg, tab_fg, tab_active_fg\n" +
 		"//   border, title_bar, scrollbar\n" +
 		"//   gutter_bg, breadcrumb_fg, overlay_bg\n"
-	return commented + "\n" + note + "\n" + string(data)
+	doc := struct {
+		Comment string `json:"_comment"`
+		Config
+	}{Comment: note, Config: DefaultConfig()}
+
+	data, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 // LoadConfig loads the unified config, with fallback to old settings.json + keybindings.json.

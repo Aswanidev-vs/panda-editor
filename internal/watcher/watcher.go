@@ -18,9 +18,14 @@ type FileChangeMsg struct {
 type Watcher struct {
 	fsWatcher *fsnotify.Watcher
 	watched   map[string]bool
-	mu        sync.Mutex
-	callback  func(path string)
-	debounce  map[string]time.Time
+	// dirRefs counts how many watched files rely on each watched directory,
+	// so Unwatch can release the underlying fsnotify handle exactly when the
+	// last file in that directory goes away.
+	dirRefs  map[string]int
+	mu       sync.Mutex
+	callback func(path string)
+	debounce map[string]time.Time
+	closed   bool
 }
 
 // New creates a new file watcher. The callback is called whenever a watched
@@ -34,6 +39,7 @@ func New(callback func(path string)) (*Watcher, error) {
 	w := &Watcher{
 		fsWatcher: fsw,
 		watched:   make(map[string]bool),
+		dirRefs:   make(map[string]int),
 		callback:  callback,
 		debounce:  make(map[string]time.Time),
 	}
@@ -43,7 +49,8 @@ func New(callback func(path string)) (*Watcher, error) {
 }
 
 // Watch adds a file path to the watcher. It watches the parent directory
-// so that file renames/recreations are also caught.
+// so that file renames/recreations are also caught. Watching the same file
+// twice is a no-op.
 func (w *Watcher) Watch(path string) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -63,23 +70,50 @@ func (w *Watcher) Watch(path string) error {
 	if err != nil {
 		return err
 	}
+	w.dirRefs[dir]++
 
 	w.watched[absPath] = true
 	return nil
 }
 
-// Unwatch removes a file path from the watcher.
+// Unwatch removes a file path from the watcher. Once no watched file relies
+// on a directory any more, the underlying fsnotify watch is removed too.
 func (w *Watcher) Unwatch(path string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
 	absPath, _ := filepath.Abs(path)
+	if !w.watched[absPath] {
+		return
+	}
 	delete(w.watched, absPath)
+
+	dir := filepath.Dir(absPath)
+	w.dirRefs[dir]--
+	if w.dirRefs[dir] <= 0 {
+		delete(w.dirRefs, dir)
+		_ = w.fsWatcher.Remove(dir)
+	}
 }
 
-// Close shuts down the watcher.
+// Close shuts down the watcher and releases every watch handle. It is safe
+// to call more than once.
 func (w *Watcher) Close() {
-	w.fsWatcher.Close()
+	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		return
+	}
+	w.closed = true
+	fsw := w.fsWatcher
+	w.watched = make(map[string]bool)
+	w.dirRefs = make(map[string]int)
+	w.debounce = make(map[string]time.Time)
+	w.mu.Unlock()
+
+	// Closing the fsnotify watcher shuts its event channels; the listen
+	// goroutine sees them closed and exits, releasing all OS-level handles.
+	_ = fsw.Close()
 }
 
 // ignoredPaths filters out noise from editors, git, etc.
