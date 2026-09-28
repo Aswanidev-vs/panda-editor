@@ -11,9 +11,14 @@ import (
 	"github.com/Aswanidev-vs/cherry/widget"
 
 	"github.com/Aswanidev-vs/panda-editor/editor/document"
+	"github.com/Aswanidev-vs/panda-editor/editor/theme"
 )
 
 const textX = 3 // gutter(2) + margin(1) at the rect origin for line counts < 10
+
+func textOriginForTest(lineCount int) int {
+	return textOrigin(0, numWidth(lineCount))
+}
 
 type harness struct {
 	v   *View
@@ -83,20 +88,50 @@ func TestGutterLineNumbers(t *testing.T) {
 	typeText(h.v, "hello\nworld")
 	h.draw()
 
-	if got := lineText(h.scr, 0, 0, 3); got != "1" {
-		t.Errorf("row0 gutter = %q, want %q right-aligned in the single label column", got, "1")
+	// 2 lines -> nw=3. Geometry: rail(0), num(1..3), tick(4), blanks(5,6), text(7)
+	// Number "1" right-aligned in 3-wide field at x=3.
+	if got := lineText(h.scr, 0, 3, 1); got != "1" {
+		t.Errorf("row0 gutter number = %q at x=3, want %q", got, "1")
 	}
-	if got := lineText(h.scr, 1, 0, 3); got != "2" {
-		t.Errorf("row1 gutter = %q, want %q", got, "2")
+	if got := lineText(h.scr, 1, 3, 1); got != "2" {
+		t.Errorf("row1 gutter number = %q at x=3, want %q", got, "2")
 	}
-	if c := h.scr.CellAt(2, 0); c.Rune != ' ' || c.Style.Fg.IsIndexed() {
-		t.Errorf("gutter margin cell = %+v, want blank", c)
+	// Tick rule is TickLight (┆) at x=4 on non-cursor lines.
+	if c := h.scr.CellAt(4, 0); c.Rune != theme.Glyph.TickLight {
+		t.Errorf("gutter tick rule = %q, want %q (TickLight)", c.Rune, theme.Glyph.TickLight)
 	}
-	if c := h.scr.CellAt(1, 1); !c.Style.Fg.IsIndexed() {
-		t.Errorf("line-number cell style = %+v, want dim foreground", c.Style)
+	// The tick rule becomes TickHeavy (│) on the cursor line. After typing
+	// "hello\nworld" the cursor sits on line 1, so the cursor line is row 1 —
+	// not row 0, which is why this needs its own row to be meaningful.
+	h.v.Focus()
+	h.draw()
+	if c := h.scr.CellAt(4, 1); c.Rune != theme.Glyph.TickHeavy {
+		t.Errorf("cursor-line tick rule = %q, want %q (TickHeavy)", c.Rune, theme.Glyph.TickHeavy)
 	}
+	if c := h.scr.CellAt(0, 1); c.Rune != theme.Glyph.BlockLeft {
+		t.Errorf("cursor-line rail marker = %q, want %q (BlockLeft)", c.Rune, theme.Glyph.BlockLeft)
+	}
+	// The cursor-line wash spans the whole row, so the gutter cells on the
+	// cursor line carry the cursor-line background, not the sunken one.
+	if c := h.scr.CellAt(3, 1); c.Style.Bg != theme.Current.CursorLine {
+		t.Errorf("cursor-line gutter background = %#v, want the cursor-line wash", c.Style.Bg)
+	}
+	if c := h.scr.CellAt(3, 0); c.Style.Bg != theme.Current.Sunken {
+		t.Errorf("idle-line gutter background = %#v, want the sunken well", c.Style.Bg)
+	}
+	// Line-number cell at x=3 has truecolour foreground.
+	if c := h.scr.CellAt(3, 0); !c.Style.Fg.IsRGB() {
+		t.Errorf("line-number cell style = %+v, want truecolour foreground", c.Style)
+	}
+	// Virtual-area gutter cells (rail + number + tick) are blank / tick.
 	if c := h.scr.CellAt(0, 2); c.Rune != ' ' {
-		t.Errorf("virtual-area gutter cell = %+v, want blank", c)
+		t.Errorf("virtual-area rail cell = %+v, want blank", c)
+	}
+	if c := h.scr.CellAt(3, 2); c.Rune != ' ' {
+		t.Errorf("virtual-area number cell = %+v, want blank", c)
+	}
+	if c := h.scr.CellAt(4, 2); c.Rune != theme.Glyph.TickLight {
+		t.Errorf("virtual-area tick cell = %q, want %q", c.Rune, theme.Glyph.TickLight)
 	}
 }
 
@@ -105,14 +140,15 @@ func TestTextSpansDraw(t *testing.T) {
 	typeText(h.v, "hello\nworld")
 	h.draw()
 
-	if got := lineText(h.scr, 0, textX, 10); got != "hello" {
+	tx := textOriginForTest(2)
+	if got := lineText(h.scr, 0, tx, 10); got != "hello" {
 		t.Errorf("line0 = %q, want hello", got)
 	}
-	if got := lineText(h.scr, 1, textX, 10); got != "world" {
+	if got := lineText(h.scr, 1, tx, 10); got != "world" {
 		t.Errorf("line1 = %q, want world", got)
 	}
-	if c := h.scr.CellAt(textX+5, 0); c.Rune != ' ' || !c.Style.Bg.IsDefault() {
-		t.Errorf("cell past EOL = %+v, want unstyled blank", c)
+	if c := h.scr.CellAt(tx+5, 0); c.Rune != ' ' || !c.Style.Bg.IsRGB() {
+		t.Errorf("cell past EOL = %+v, want theme background", c)
 	}
 }
 
@@ -122,12 +158,14 @@ func TestNoLineWrapping(t *testing.T) {
 	typeText(h.v, long)
 	h.draw()
 
-	want := long[:80-textX]
-	if got := lineText(h.scr, 0, textX, 80-textX); got != want {
+	tx := textOriginForTest(1)
+	want := long[:80-tx]
+	if got := lineText(h.scr, 0, tx, 80-tx); got != want {
 		t.Errorf("row0 drawn %d chars, want %d (clipped at right edge)", len(got), len(want))
 	}
-	if got := lineText(h.scr, 1, textX, 10); got != "" {
-		t.Errorf("row1 = %q, want empty (horizontal-only, no wrap)", got)
+	// Past EOF shows MiddleDot (·) at text origin, not ~.
+	if got := lineText(h.scr, 1, tx, 1); got != string(theme.Glyph.MiddleDot) {
+		t.Errorf("row1 = %q, want %q virtual-line marker", got, string(theme.Glyph.MiddleDot))
 	}
 	if lc := h.doc.LineCount(); lc != 1 {
 		t.Errorf("LineCount = %d, want 1 (wrapping disabled)", lc)
@@ -144,17 +182,18 @@ func TestTabExpansion(t *testing.T) {
 	typeText(h.v, "x")
 	h.draw()
 
-	if got := lineText(h.scr, 0, textX, 10); got != "    x" {
+	tx := textOriginForTest(1)
+	if got := lineText(h.scr, 0, tx, 10); got != "    x" {
 		t.Errorf("row0 = %q, want tab expanded to 4 spaces", got)
 	}
 	h.v.SetTabWidth(2)
 	h.draw()
-	if got := lineText(h.scr, 0, textX, 10); got != "  x" {
+	if got := lineText(h.scr, 0, tx, 10); got != "  x" {
 		t.Errorf("row0 after SetTabWidth(2) = %q, want 2-space tab", got)
 	}
 }
 
-func TestSelectionInversion(t *testing.T) {
+func TestSelectionBackground(t *testing.T) {
 	h := newHarness(t)
 	typeText(h.v, "hello\nworld")
 	if !h.key(input.KeyHome, input.ModCtrl) {
@@ -167,22 +206,31 @@ func TestSelectionInversion(t *testing.T) {
 	}
 	h.draw()
 
-	for x := textX; x < textX+5; x++ {
+	tx := textOriginForTest(2)
+	selBg := theme.Current.Selection
+	for x := tx; x < tx+5; x++ {
 		c := h.scr.CellAt(x, 0)
-		if c.Rune != rune("hello"[x-textX]) {
-			t.Errorf("cell %d rune = %q, want %q", x, c.Rune, "hello"[x-textX])
+		if c.Rune != rune("hello"[x-tx]) {
+			t.Errorf("cell %d rune = %q, want %q", x, c.Rune, "hello"[x-tx])
 		}
-		if c.Style.Attrs&cell.AttrReverse == 0 {
-			t.Errorf("cell %d style %+v: selection must set AttrReverse", x, c.Style)
+		// Selection uses explicit background, not reverse video.
+		if c.Style.Bg != selBg {
+			t.Errorf("cell %d bg = %+v, want Selection background %+v", x, c.Style.Bg, selBg)
+		}
+		if c.Style.Attrs&cell.AttrReverse != 0 {
+			t.Errorf("cell %d must not have AttrReverse set", x)
 		}
 	}
-	if c := h.scr.CellAt(textX+5, 0); c.Style.Attrs&cell.AttrReverse != 0 {
-		t.Errorf("cell past selection end must not be reversed, style %+v", c.Style)
+	// Cell past selection end has normal background, not reversed.
+	if c := h.scr.CellAt(tx+5, 0); c.Style.Bg == selBg {
+		t.Errorf("cell past selection end must not have Selection bg, style %+v", c.Style)
 	}
-	// the second line is outside the selection
-	if c := h.scr.CellAt(textX, 1); c.Style.Attrs&cell.AttrReverse != 0 {
-		t.Error("line1 first cell reversed, selection is line0 only")
+	// Second line is outside the selection.
+	if c := h.scr.CellAt(tx, 1); c.Style.Bg == selBg {
+		t.Error("line1 first cell has Selection bg, selection is line0 only")
 	}
+	// Unselected cells on the selected line (before selection start) have normal bg.
+	// (Selection starts at col 0 in this test, so nothing before it.)
 }
 
 func TestCursorPosColumnCalc(t *testing.T) {
@@ -206,9 +254,11 @@ func TestCursorPosColumnCalc(t *testing.T) {
 	if pos.Y != 0 {
 		t.Errorf("CursorPos.Y = %d, want 0", pos.Y)
 	}
-	// x = rect.X + gutter(2) + margin(1) + width("he") = 0 + 2 + 1 + 2
-	if pos.X != textX+2 {
-		t.Fatalf("CursorPos.X = %d, want %d (gutter+margin + rune widths of prefix)", pos.X, textX+2)
+	// x = rect.X + rail(1) + numWidth(3) + tick(1) + blanks(2) + width("he")
+	//     = 0 + 1 + 3 + 1 + 2 + 2 = 9
+	tx := textOriginForTest(2)
+	if pos.X != tx+2 {
+		t.Fatalf("CursorPos.X = %d, want %d (textOrigin + rune widths of prefix)", pos.X, tx+2)
 	}
 
 	h.v.Blur()
@@ -229,9 +279,10 @@ func TestCursorPosWideAndTab(t *testing.T) {
 	if !ok {
 		t.Fatal("CursorPos: want visible=true")
 	}
-	// tab 4 + two wide runes (4 cols) after the gutter/margin offset
-	if pos.X != textX+8 || pos.Y != 0 {
-		t.Errorf("CursorPos = %+v, want {%d 0}", pos, textX+8)
+	// tab 4 + two wide runes (4 cols) after the text origin
+	tx := textOriginForTest(1)
+	if pos.X != tx+8 || pos.Y != 0 {
+		t.Errorf("CursorPos = %+v, want {%d 0}", pos, tx+8)
 	}
 }
 
@@ -261,12 +312,12 @@ func TestScrollRepositionAfterMove(t *testing.T) {
 	if sy := h.doc.ScrollY(); sy < 36-24+1 {
 		t.Errorf("ScrollY = %d, want >= %d so line 36 stays visible", sy, 36-24+1)
 	}
-	// topmost drawn line number is ScrollY+1; 40 lines -> two label columns
-	// plus a blank margin column, so a 2-digit number fills cols 0..1
-	got := lineText(h.scr, 0, 0, 3)
-	want := rightAlign(h.doc.ScrollY()+1, 2)
+	// 40 lines -> digitCount=2, nw=3. Number field at x=1..3, right-aligned.
+	// Topmost drawn line number is ScrollY+1, at x=3 (rightmost of 3-wide field).
+	got := lineText(h.scr, 0, 3, 1)
+	want := rightAlign(h.doc.ScrollY()+1, 3)[2:] // last char of 3-wide right-align
 	if got != want {
-		t.Errorf("pixel row0 gutter = %q, want %q (ScrollY offset)", got, want)
+		t.Errorf("pixel row0 gutter number = %q, want %q (ScrollY offset)", got, want)
 	}
 	pos, ok := h.v.CursorPos()
 	if !ok {

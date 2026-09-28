@@ -106,6 +106,7 @@ var Plain = Style{}
 func (s Style) Foreground(c Color) Style { s.Fg = c; return s }
 func (s Style) Background(c Color) Style { s.Bg = c; return s }
 func (s Style) Bold(on bool) Style       { return s.attr(AttrBold, on) }
+func (s Style) Blink(on bool) Style      { return s.attr(AttrBlink, on) }
 func (s Style) Italic(on bool) Style     { return s.attr(AttrItalic, on) }
 func (s Style) Underline(on bool) Style  { return s.attr(AttrUnderline, on) }
 func (s Style) Reverse(on bool) Style    { return s.attr(AttrReverse, on) }

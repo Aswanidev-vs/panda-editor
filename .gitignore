@@ -28,3 +28,5 @@ Thumbs.db
 *.tmp
 
 .mimocode/
+# Rendered UI previews from _preview (regenerate, never commit)
+_preview/preview-out/

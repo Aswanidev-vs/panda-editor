@@ -9,7 +9,10 @@ import (
 	"github.com/Aswanidev-vs/cherry/render"
 	"github.com/Aswanidev-vs/cherry/widget"
 
+	"github.com/Aswanidev-vs/cherry/cell"
+
 	"github.com/Aswanidev-vs/panda-editor/editor/cli"
+	"github.com/Aswanidev-vs/panda-editor/editor/theme"
 )
 
 // draw renders one frame into an off-screen buffer; it must never panic.
@@ -89,5 +92,41 @@ func TestShellWelcomeDismiss(t *testing.T) {
 	sh.Handle(input.KeyPress{Key: input.KeyNone, Rune: 'i'})
 	if sh.ov != ovNone {
 		t.Fatal("welcome should dismiss on any key")
+	}
+}
+
+// The chrome used to build its styles into package-level vars at init, which
+// froze whichever palette happened to be current and made a theme switch a
+// silent no-op. Styles must now be resolved per frame, so switching themes and
+// drawing again has to produce genuinely different cells — and switching back
+// has to restore them exactly.
+func TestThemeIsResolvedPerFrameNotFrozenAtInit(t *testing.T) {
+	before := theme.Current
+	t.Cleanup(func() { theme.Current = before })
+
+	frame := func(p theme.Palette) cell.Style {
+		theme.Current = p
+		s, err := New(&cherry.App{}, Options{
+			Args:    &cli.Args{Files: []cli.FileSpec{{Path: ""}}},
+			Version: "test",
+		})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		scr := render.New(60, 6)
+		s.Draw(&widget.DrawCtx{Rect: geom.Rect{Size: geom.Size{W: 60, H: 6}}, Screen: scr})
+		return scr.CellAt(30, 2).Style // the editor body
+	}
+
+	ink := frame(theme.Ink)
+	vellum := frame(theme.Vellum)
+	if ink.Bg == vellum.Bg {
+		t.Fatalf("switching theme did not change the editor surface: both are %#v", ink.Bg)
+	}
+	if vellum.Bg != theme.Light.Base {
+		t.Errorf("Vellum surface = %#v, want the light palette's Base %#v", vellum.Bg, theme.Light.Base)
+	}
+	if back := frame(theme.Ink); back != ink {
+		t.Errorf("switching back gave %#v, want the original %#v", back, ink)
 	}
 }

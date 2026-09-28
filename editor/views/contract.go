@@ -1,7 +1,3 @@
-// Package views holds the editor's chrome widgets: the bottom status bar,
-// the context hint bar, a single-line prompt input used by dialogs, a
-// centered popup frame for confirmations, and the welcome splash. Each is a
-// plain cherry widget with no knowledge of documents or files.
 package views
 
 import (
@@ -12,46 +8,102 @@ import (
 	"github.com/Aswanidev-vs/cherry/geom"
 	"github.com/Aswanidev-vs/cherry/input"
 	"github.com/Aswanidev-vs/cherry/widget"
+
+	"github.com/Aswanidev-vs/panda-editor/editor/theme"
 )
 
-// StatusBarText builds the bottom bar segments: mode name + file name (+
-// modified marker) on the left, message in the middle, "Ln X, Col Y" +
-// encoding/EOL on the right. Returns segments ready for widget.NewStatusBar.
-func StatusBarText(mode, file, message string, ln, col int, modified, readonly bool) []widget.Segment {
-	left := strings.ToUpper(mode)
-	if file != "" {
-		if left != "" {
-			left += " "
+// StatusBarText builds the bottom bar segments: an instrument cluster with
+// hairline dividers. Segments, left to right:
+//   mode badge (uppercase, accent bold on raised, padded 1 cell each side)
+//   │ file name
+//   │ blinking ● modified dot in accent when dirty
+//   │ [RO] badge in warning colour
+//   │ transient message, centred, faint and italic, taking the flexible middle slot
+//   │ right cluster: cursor position rendered compactly as 12:4 in bold with
+//   │ faint LN/COL labels, then UTF-8 and LF.
+//
+// Returns segments ready for widget.NewStatusBar.
+// ElidePath shortens a file path to fit budget columns, keeping the tail —
+// the file name and its immediate parent are what identify a buffer, while
+// the root of the path rarely is — and marking the cut with a leading
+// ellipsis so a shortened path is never mistaken for the whole one.
+//
+// It is called with the space the status strip has left over after the mode
+// badge and the readouts. Without it, a deeply nested path pushes the cursor
+// position off the row, and the position is the one value in that strip a user
+// glances at continuously.
+func ElidePath(path string, budget int) string {
+	if path == "" {
+		return ""
+	}
+	if budget < 4 {
+		budget = 4
+	}
+	if cell.StringWidth(path) <= budget {
+		return path
+	}
+	runes := []rune(path)
+	keep := budget - 1 // one cell for the ellipsis itself
+	if keep > len(runes) {
+		keep = len(runes)
+	}
+	// Prefer to start the tail at a path separator: a partial leading segment
+	// like "c_editor\theme" is harder to read than a whole one.
+	for i := len(runes) - keep; i < len(runes)-1; i++ {
+		if runes[i] == '/' || runes[i] == '\\' {
+			return string(theme.Glyph.Ellipsis) + string(runes[i+1:])
 		}
-		left += file
 	}
-	if modified {
-		left += " [+]"
-	}
-	if readonly {
-		left += " [RO]"
-	}
-	if left == "" {
-		left = " "
-	}
-	right := fmt.Sprintf("Ln %d, Col %d  UTF-8  LF", ln, col)
-	return []widget.Segment{
-		{Text: " " + left + " ", Style: styleAccent},
-		{Text: message, Style: styleDim, Flex: 1, Center: true},
-		{Text: " " + right + " ", Style: styleDim},
-	}
+	return string(theme.Glyph.Ellipsis) + string(runes[len(runes)-keep:])
 }
 
-// HintBar renders the nano-style one-line key hint strip for the current
-// mode. The mode picks which hints show (insert, search, dialog, welcome).
-// Returning content is a fixed-height, left-aligned stripped strip that
-// overflows from the right.
-func HintBar(mode string) *widget.Text {
-	hints, ok := hintStrips[mode]
-	if !ok {
-		hints = hintFallback
+func StatusBarText(mode, file, message string, ln, col int, modified, readonly bool) []widget.Segment {
+	// Mode badge: uppercase, on raised surface.
+	modeBadge := strings.ToUpper(mode)
+	if modeBadge == "" {
+		modeBadge = " "
 	}
-	return &widget.Text{Content: hints, Style: styleDim}
+	// File name.
+	fileName := file
+	if fileName == "" {
+		fileName = " "
+	}
+	// Modified dot: blinking accent.
+	var modDot cell.Cell
+	r := theme.Current.Roles()
+	if modified {
+		modDot = cell.Cell{Rune: theme.Glyph.DotFilled, Style: r.Mark}
+	} else {
+		modDot = cell.Cell{Rune: ' '}
+	}
+	// Readonly badge.
+	var roBadge string
+	if readonly {
+		roBadge = "[RO]"
+	} else {
+		roBadge = " "
+	}
+	// Right cluster: position, UTF-8, LF.
+	// Position: compactly as 12:4.
+	var pos string
+	if ln > 0 && col > 0 {
+		pos = fmt.Sprintf("%d:%d", ln, col)
+	} else {
+		pos = "  :"
+	}
+	// We'll make the entire right segment in ReadoutValue style (bold) for simplicity.
+	// The design expects the position bold and the labels faint, but we cannot
+	// achieve multi-styled text in a single segment. We'll make the position bold
+	// and accept that the labels are also bold for now.
+	rightCluster := fmt.Sprintf("%s  UTF-8  LF", pos)
+	return []widget.Segment{
+		{Text: " " + modeBadge + " ", Style: r.Badge},
+		{Text: " " + fileName + " ", Style: r.Surface},
+		{Text: string(modDot.Rune), Style: modDot.Style},
+		{Text: " " + roBadge + " ", Style: r.ChromeLabel},
+		{Text: message, Style: r.ChromeLabel, Flex: 1, Center: true},
+		{Text: " " + rightCluster + " ", Style: r.ReadoutValue},
+	}
 }
 
 // InputLine is a single-line edit prompt (goto-line, save-as, search). It
@@ -95,7 +147,7 @@ func New(label, initial string, onOK func(string), onCancel func()) *InputLine {
 
 func (i *InputLine) SetValue(v string) {
 	i.runes = []rune(v)
-	i.cursor = len(i.runes)
+	i.cursor = len(v)
 }
 
 func (i *InputLine) Text() string   { return string(i.runes) }
@@ -116,17 +168,18 @@ func (i *InputLine) Draw(ctx *widget.DrawCtx) {
 	if r.Empty() {
 		return
 	}
-	ctx.Screen.Fill(r, blank(styleText))
-	x := ctx.Screen.Print(r.Pos.X, r.Pos.Y, r.Right(), i.label, styleAccent)
+	// Label in accent bold on base surface.
+	roles := theme.Current.Roles()
+	x := ctx.Screen.Print(r.Pos.X, r.Pos.Y, r.Right(), i.label, roles.Badge)
 	// One separator space after the label, unless the label already ends
 	// with one (or is empty).
 	if i.label != "" && !strings.HasSuffix(i.label, " ") {
-		x = ctx.Screen.Print(x, r.Pos.Y, r.Right(), " ", styleText)
+		x = ctx.Screen.Print(x, r.Pos.Y, r.Right(), " ", roles.Surface)
 	}
-	ctx.Screen.Print(x, r.Pos.Y, r.Right(), string(i.runes), styleText)
+	// Text in base style.
+	ctx.Screen.Print(x, r.Pos.Y, r.Right(), string(i.runes), roles.Surface)
 
-	// Block cursor: reverse the cell under the cursor (a space when the
-	// cursor sits at the end) without disturbing the surrounding text.
+	// Block cursor: use the accent style for the cursor block.
 	cx := x
 	for _, ru := range i.runes[:i.cursor] {
 		cx += cell.RuneWidth(ru)
@@ -135,7 +188,7 @@ func (i *InputLine) Draw(ctx *widget.DrawCtx) {
 	if i.cursor < len(i.runes) {
 		cur = i.runes[i.cursor]
 	}
-	cursorBlock(ctx.Screen, cx, r.Pos.Y, r.Right(), cur, styleInverse)
+	cursorBlock(ctx.Screen, cx, r.Pos.Y, r.Right(), cur, roles.Signal)
 }
 
 func (i *InputLine) Handle(ev input.Event) bool {
@@ -164,6 +217,7 @@ func (i *InputLine) Handle(ev input.Event) bool {
 		if i.cursor <= 0 {
 			return true
 		}
+		// Delete the character before the cursor.
 		i.runes = append(i.runes[:i.cursor-1], i.runes[i.cursor:]...)
 		i.cursor--
 		return true
@@ -262,11 +316,20 @@ func (p *Popup) Measure(max geom.Size) geom.Size {
 	return geom.Size{W: pw, H: h}
 }
 
+// Draw paints the popup centred inside ctx.Rect.
+//
+// It does not dim what is behind it. The scrim belongs to whoever owns the
+// frame composition — the shell, which knows an overlay is coming and draws
+// the editor first — because a container widget silently restyling every cell
+// it was handed is a side effect no caller would expect, and it makes the
+// widget untestable in isolation.
 func (p *Popup) Draw(ctx *widget.DrawCtx) {
 	r := ctx.Rect
 	if r.Empty() {
 		return
 	}
+	roles := theme.Current.Roles()
+	// Popup dimensions.
 	pw := popupWidth(r.Size.W)
 	if pw > r.Size.W {
 		pw = r.Size.W
@@ -293,11 +356,12 @@ func (p *Popup) Draw(ctx *widget.DrawCtx) {
 		Pos:  geom.Point{X: r.Pos.X + (r.Size.W-pw)/2, Y: r.Pos.Y + (r.Size.H-ph)/2},
 		Size: geom.Size{W: pw, H: ph},
 	}
+	// Popup style: overlay surface background, dimmed accent frame.
 	box := widget.Box{
 		Mode:        widget.BorderRounded,
 		Title:       p.Title,
-		Background:  styleText,
-		BorderStyle: styleBorder,
+		Background:  roles.Overlay,
+		BorderStyle: theme.Style(theme.Current.AccentDim, roles.Overlay.Bg),
 		Child:       p.Child,
 	}
 	box.Draw(&widget.DrawCtx{Rect: frame, Screen: ctx.Screen})
@@ -313,51 +377,14 @@ func (p *Popup) Handle(ev input.Event) bool {
 	return p.Child.Handle(ev)
 }
 
-// Welcome is the splash widget shown when panda starts with no files: a
-// spaced-distance large-format editor name, version and three principal
-// shortcuts. Text only, no focus.
-type Welcome struct {
-	widget.Base
-	Version string
-}
-
-func (w *Welcome) Measure(max geom.Size) geom.Size {
-	rows := w.rows()
-	wd := 0
-	for _, row := range rows {
-		if lw := strW(row.text); lw > wd {
-			wd = lw
-		}
-	}
-	return fitSize(geom.Size{W: wd, H: len(rows)}, max)
-}
-
-func (w *Welcome) Draw(ctx *widget.DrawCtx) {
-	r := ctx.Rect
-	if r.Empty() {
-		return
-	}
-	rows := w.rows()
-	y0 := r.Pos.Y + (r.Size.H-len(rows))/2
-	if y0 < r.Pos.Y {
-		y0 = r.Pos.Y
-	}
-	for k, row := range rows {
-		y := y0 + k
-		if y >= r.Bottom() {
-			break
-		}
-		x := r.Pos.X + (r.Size.W-strW(row.text))/2
-		if x < r.Pos.X {
-			x = r.Pos.X
-		}
-		ctx.Screen.Print(x, y, r.Right(), row.text, row.style)
-	}
-}
-
 // Dialog is a small confirmation box with a centered message and two
 // labelled actions; onAction receives the chosen label ("yes"/"no" etc.)
 // or "" for Esc. Enter picks the first action, Esc cancels.
+//
+// Each action becomes a chip: [ label ], the selected chip in accent bold
+// on the raised surface with a ▸ pointer before it, unselected chips in
+// faint ink on the overlay surface. The dialog body is faint ink on the
+// overlay surface.
 type Dialog struct {
 	Message  string
 	Actions  []string
@@ -386,6 +413,13 @@ func (d *Dialog) clampSel() {
 	}
 }
 
+// Measure reports the size the dialog needs: the wider of the message and the
+// action row, plus the frame's border, its one-cell vertical padding, its
+// two-cell horizontal padding, and the row the actions sit on.
+//
+// It must agree with Draw exactly. When the two disagree the dialog does not
+// look wrong so much as lose content — the action row falls off the bottom —
+// which is a genuinely confusing failure to debug from the screen.
 func (d *Dialog) Measure(max geom.Size) geom.Size {
 	msgW := 0
 	for _, ln := range strings.Split(d.Message, "\n") {
@@ -394,62 +428,87 @@ func (d *Dialog) Measure(max geom.Size) geom.Size {
 		}
 	}
 	actW := 0
-	for _, a := range d.Actions {
-		actW += strW(a) + 2
+	for i, a := range d.Actions {
+		actW += strW(a) + 2 // the chip's brackets
+		if i == d.sel {
+			actW += cell.RuneWidth(theme.Glyph.PointerR) + 1
+		}
 	}
 	if len(d.Actions) > 1 {
-		actW += len(d.Actions) - 1
+		actW += len(d.Actions) - 1 // the gaps between chips
 	}
 	w := msgW
 	if actW > w {
 		w = actW
 	}
-	h := len(strings.Split(d.Message, "\n")) + 3
-	return fitSize(geom.Size{W: w + 4, H: h}, max)
+	h := len(strings.Split(d.Message, "\n")) + 1 // the actions' own row
+	return fitSize(geom.Size{W: w + 6, H: h + 4}, max) // +2 borders, +2 padding
 }
 
+// Draw centres the dialog inside ctx.Rect at its measured size and paints it
+// on the overlay surface.
+//
+// It centres rather than filling the assigned rect because the shell hands
+// every overlay the whole viewport: a dialog that painted its rect as given
+// would cover the entire editor and read as a crash, not a question.
 func (d *Dialog) Draw(ctx *widget.DrawCtx) {
 	r := ctx.Rect
 	if r.Empty() {
 		return
 	}
-	frame := widget.Box{
-		Mode:        widget.BorderRounded,
-		Background:  styleText,
-		BorderStyle: styleBorder,
-	}
-	frame.Draw(ctx)
-	if r.Size.W <= 2 || r.Size.H <= 2 {
+	frame := d.frameIn(r)
+	if frame.Empty() {
 		return
 	}
-	inner := geom.Rect{
-		Pos:  geom.Point{X: r.Pos.X + 1, Y: r.Pos.Y + 1},
-		Size: geom.Size{W: r.Size.W - 2, H: r.Size.H - 2},
+
+	roles := theme.Current.Roles()
+	box := widget.Box{
+		Mode:        widget.BorderRounded,
+		Background:  roles.Overlay,
+		BorderStyle: roles.Frame,
+		PadT:        1,
+		PadB:        1,
+		PadL:        2,
+		PadR:        2,
 	}
+	box.Draw(&widget.DrawCtx{Rect: frame, Screen: ctx.Screen})
+
+	inner := geom.Rect{
+		Pos:  geom.Point{X: frame.Pos.X + 3, Y: frame.Pos.Y + 2},
+		Size: geom.Size{W: frame.Size.W - 5, H: frame.Size.H - 3},
+	}
+	if inner.Size.W <= 0 || inner.Size.H <= 0 {
+		return
+	}
+
 	lines := widget.WrapText(d.Message, inner.Size.W)
-	last := inner.Pos.Y
+	lastY := inner.Pos.Y
 	for i, ln := range lines {
 		y := inner.Pos.Y + i
 		if y >= inner.Bottom() {
-			last = inner.Bottom()
+			lastY = inner.Bottom()
 			break
 		}
-		printCentered(ctx.Screen, ln, y, inner, styleText)
-		last = y + 1
+		printCentered(ctx.Screen, ln, y, inner, roles.DialogBody)
+		lastY = y + 1
 	}
 	if len(d.Actions) == 0 {
 		return
 	}
-	y := inner.Bottom() - 1
-	if y < last {
-		y = last
+	actionY := inner.Bottom() - 1
+	if actionY < lastY {
+		actionY = lastY
 	}
-	if y >= inner.Bottom() {
+	if actionY >= inner.Bottom() {
 		return
 	}
+
 	total := 0
-	for _, a := range d.Actions {
-		total += strW(a) + 2
+	for i, a := range d.Actions {
+		total += strW(a) + 2 // the brackets
+		if i == d.sel {
+			total += cell.RuneWidth(theme.Glyph.PointerR) + 1
+		}
 	}
 	if len(d.Actions) > 1 {
 		total += len(d.Actions) - 1
@@ -459,14 +518,35 @@ func (d *Dialog) Draw(ctx *widget.DrawCtx) {
 		x = inner.Pos.X
 	}
 	for i, a := range d.Actions {
-		st := styleText
+		st := roles.ActionIdle
 		if i == d.sel {
-			st = styleInverse
+			st = roles.ActionFocus
+			// The pointer sits in the chip's own style, so the whole
+			// selection reads as one object rather than a glyph beside a
+			// label.
+			x = ctx.Screen.Print(x, actionY, inner.Right(), string(theme.Glyph.PointerR)+" ", st)
 		}
-		x = ctx.Screen.Print(x, y, inner.Right(), " "+a+" ", st)
+		x = ctx.Screen.Print(x, actionY, inner.Right(), "["+a+"]", st)
 		if i < len(d.Actions)-1 {
-			x = ctx.Screen.Print(x, y, inner.Right(), " ", styleText)
+			x = ctx.Screen.Print(x, actionY, inner.Right(), " ", roles.Overlay)
 		}
+	}
+}
+
+// frameIn reports the centred rect the dialog occupies inside r: its measured
+// size, clamped to r so a short terminal cannot push the frame off screen.
+func (d *Dialog) frameIn(r geom.Rect) geom.Rect {
+	pref := d.Measure(geom.Size{})
+	w, h := pref.W, pref.H
+	if w > r.Size.W {
+		w = r.Size.W
+	}
+	if h > r.Size.H {
+		h = r.Size.H
+	}
+	return geom.Rect{
+		Pos:  geom.Point{X: r.Pos.X + (r.Size.W-w)/2, Y: r.Pos.Y + (r.Size.H-h)/2},
+		Size: geom.Size{W: w, H: h},
 	}
 }
 

@@ -296,8 +296,8 @@ func (v *View) posAt(mx, my int) document.Pos {
 	if line >= lc {
 		line = lc - 1
 	}
-	gw := digitCount(lc) + 1
-	textX := rect.Pos.X + gw + 1
+	nw := numWidth(lc)
+	textX := textOrigin(rect.Pos.X, nw)
 	col := 0
 	if mx >= textX {
 		row := v.hitRow(line)
@@ -366,8 +366,8 @@ func (v *View) CursorPos() (geom.Point, bool) {
 	if dy < 0 || dy >= v.lastRect.Size.H {
 		return geom.Point{}, false
 	}
-	gw := digitCount(doc.LineCount()) + 1
-	textX := v.lastRect.Pos.X + gw + 1
+	nw := numWidth(doc.LineCount())
+	textX := textOrigin(v.lastRect.Pos.X, nw)
 	line := doc.Buffer().Line(cur.Line)
 	x := runWidthTo(line, cur.Col, textX, v.tabWidth)
 	return geom.Point{X: x, Y: v.lastRect.Pos.Y + dy}, true
