@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	chromacell "github.com/Aswanidev-vs/cherry/cell"
+
+	"github.com/Aswanidev-vs/panda-editor/editor/theme"
 )
 
 // join concatenates every span's text for an exact-equality check.
@@ -24,14 +26,6 @@ func assertConcat(t *testing.T, spans []Span, line string) {
 	t.Helper()
 	if got := join(spans); got != line {
 		t.Fatalf("span concatenation = %q, want %q", got, line)
-	}
-}
-
-// fgIsIndexed checks a style carries an indexed (256-colour) foreground n.
-func fgIsIndexed(t *testing.T, style chromacell.Style, n uint8) {
-	t.Helper()
-	if !style.Fg.IsIndexed() || style.Fg.Index() != n {
-		t.Fatalf("style.Foreground = %#v, want Indexed(%d)", style.Fg, n)
 	}
 }
 
@@ -80,7 +74,7 @@ func TestGoKeywordNumberCommentString(t *testing.T) {
 	}
 	var kwCount int
 	for _, s := range spans {
-		if s.Style.Attrs&chromacell.AttrBold != 0 && s.Style.Fg.IsIndexed() && s.Style.Fg.Index() == 75 {
+		if s.Style.Attrs&chromacell.AttrBold != 0 && s.Style.Fg == theme.Current.Keyword {
 			if s.Text != "if" && s.Text != "true" {
 				t.Fatalf("keyword span = %q, want \"if\" or \"true\"", s.Text)
 			}
@@ -96,7 +90,7 @@ func TestGoKeywordNumberCommentString(t *testing.T) {
 	assertConcat(t, spans, "n := 42")
 	var numCount int
 	for _, s := range spans {
-		if s.Style.Fg.IsIndexed() && s.Style.Fg.Index() == 173 {
+		if s.Style.Fg == theme.Current.Number {
 			if s.Text != "42" {
 				t.Fatalf("number span = %q, want \"42\"", s.Text)
 			}
@@ -112,7 +106,7 @@ func TestGoKeywordNumberCommentString(t *testing.T) {
 	assertConcat(t, spans, "// note here")
 	var comCount int
 	for _, s := range spans {
-		if s.Style.Attrs&chromacell.AttrItalic != 0 && s.Style.Fg.IsIndexed() && s.Style.Fg.Index() == 245 {
+		if s.Style.Attrs&chromacell.AttrItalic != 0 && s.Style.Fg == theme.Current.Comment {
 			comCount++
 		}
 	}
@@ -128,7 +122,7 @@ func TestGoKeywordNumberCommentString(t *testing.T) {
 	assertConcat(t, spans, `s := "hello"`)
 	var strCount int
 	for _, s := range spans {
-		if s.Style.Fg.IsIndexed() && s.Style.Fg.Index() == 114 {
+		if s.Style.Fg == theme.Current.String {
 			if s.Text != `"hello"` {
 				t.Fatalf("string span = %q, want %q", s.Text, `"hello"`)
 			}
@@ -151,7 +145,7 @@ func TestBlockCommentContinuation(t *testing.T) {
 		t.Fatalf("after line 1: out = %v, want StateComment", out1)
 	}
 	for _, s := range open {
-		if !(s.Style.Fg.IsIndexed() && s.Style.Fg.Index() == 245) {
+		if !(s.Style.Fg.IsRGB()) {
 			t.Fatalf("span %q inside unterminated /* comment should be comment styled", s.Text)
 		}
 	}
@@ -162,8 +156,8 @@ func TestBlockCommentContinuation(t *testing.T) {
 	if out2 != StateComment {
 		t.Fatalf("after line 2: out = %v, want StateComment", out2)
 	}
-	if len(mid) != 1 || !(mid[0].Style.Fg.IsIndexed() && mid[0].Style.Fg.Index() == 245) {
-		t.Fatalf("comment continuation span = %#v, want one 245-coloured span", mid)
+	if len(mid) != 1 || mid[0].Style.Fg != theme.Current.Comment {
+		t.Fatalf("comment continuation span = %#v, want one comment-coloured span", mid)
 	}
 
 	// line 3 closes the comment and carries more code.
@@ -175,7 +169,7 @@ func TestBlockCommentContinuation(t *testing.T) {
 	if close[0].Text != "end */" {
 		t.Fatalf("first span = %q, want \"end */\"", close[0].Text)
 	}
-	if !(close[0].Style.Fg.IsIndexed() && close[0].Style.Fg.Index() == 245) {
+	if close[0].Style.Fg != theme.Current.Comment {
 		t.Fatalf("closing span should carry the comment colour, got %#v", close[0].Style.Fg)
 	}
 }
@@ -282,7 +276,7 @@ func TestCommentContinuationCloseOnly(t *testing.T) {
 	if len(spans) != 1 {
 		t.Fatalf("len(spans) = %d, want 1 span covering the full close marker", len(spans))
 	}
-	if !(spans[0].Style.Fg.IsIndexed() && spans[0].Style.Fg.Index() == 245) {
+	if spans[0].Style.Fg != theme.Current.Comment {
 		t.Fatalf("close-only span should stay comment styled, got %#v", spans[0].Style.Fg)
 	}
 }

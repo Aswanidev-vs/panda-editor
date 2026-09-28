@@ -9,14 +9,10 @@ import (
 
 	"github.com/Aswanidev-vs/panda-editor/editor/document"
 	"github.com/Aswanidev-vs/panda-editor/editor/highlight"
+	"github.com/Aswanidev-vs/panda-editor/editor/theme"
 )
 
 const defaultTabWidth = 4
-
-var (
-	gutterStyle = cell.Plain.Foreground(cell.Indexed(240))
-	lineBgStyle = cell.Plain.Background(cell.Indexed(237))
-)
 
 type cachedSpan struct {
 	text  string
@@ -42,9 +38,26 @@ type seg struct {
 	style cell.Style
 }
 
-// Draw paints the viewport owned by ctx.Rect: a right-aligned line-number
-// gutter, one margin column, then the text area with syntax spans, tab
-// expansion, current-line highlight and selection inversion.
+// textOrigin returns the absolute column where the text area begins,
+// given the number-field width. Geometry: rail(1) + numberField(numWidth) +
+// tickRule(1) + blanks(2).
+func textOrigin(gx, numWidth int) int {
+	return gx + 1 + numWidth + 1 + 2
+}
+
+// numWidth computes the gutter number-field width: max(3, digits).
+func numWidth(lineCount int) int {
+	d := digitCount(lineCount)
+	if d < 3 {
+		d = 3
+	}
+	return d
+}
+
+// Draw paints the viewport owned by ctx.Rect: a gutter with marker rail,
+// right-aligned line-number field, tick rule, two blank columns, then the
+// text area with syntax spans, tab expansion, current-line highlight and
+// selection background.
 func (v *View) Draw(ctx *widget.DrawCtx) {
 	doc := v.doc
 	if doc == nil || ctx == nil || ctx.Screen == nil || ctx.Rect.Empty() {
@@ -53,9 +66,16 @@ func (v *View) Draw(ctx *widget.DrawCtx) {
 	buf := doc.Buffer()
 	lineCount := doc.LineCount()
 	rect := ctx.Rect
-	gw := digitCount(lineCount) + 1
+
+	roles := theme.Current.Roles()
+
+	// Paint the whole viewport with the editor background first; per-line
+	// work only overdraws the gutter, cursor line and text on top of it.
+	ctx.Screen.Fill(rect, cell.Cell{Rune: ' ', Style: roles.Surface, Width: 1})
+
+	nw := numWidth(lineCount)
 	gx := rect.Pos.X
-	textX := gx + gw + 1
+	textX := textOrigin(gx, nw)
 	right := rect.Right()
 
 	selOK := false
@@ -75,8 +95,42 @@ func (v *View) Draw(ctx *widget.DrawCtx) {
 	for y := 0; y < rect.Size.H; y++ {
 		lineNo := doc.ScrollY() + y
 		sy := rect.Pos.Y + y
+		active := lineNo < lineCount && v.focused && !selOK && cur.Line == lineNo
+
+		if active {
+			// Cursor-line wash spans the entire row: rail, number field,
+			// tick rule, blanks, and text area all get the CursorLine bg.
+			fillCells(ctx, gx, right, sy, ' ', roles.RuleActive)
+		} else {
+			// Non-cursor rows: gutter (rail + number + rule) gets Sunken,
+			// text area gets Base. Paint gutter background now.
+			fillCells(ctx, gx, gx+1+nw+1, sy, ' ', roles.Well)
+		}
+
+		// Marker rail: BlockLeft (▌) in Accent on cursor line, blank elsewhere.
+		if active {
+			ctx.Screen.Set(gx, sy, cell.Cell{Rune: theme.Glyph.BlockLeft, Style: roles.Rail, Width: 1})
+		} else {
+			ctx.Screen.Set(gx, sy, cell.Cell{Rune: ' ', Style: roles.Well, Width: 1})
+		}
+
+		// Number field: right-aligned in nw columns, starting at gx+1.
+		drawGutterNumber(ctx, gx+1, nw, sy, lineNo, lineCount, active, roles)
+
+		// Tick rule: TickLight (┆) in Rule on every line; TickHeavy (│) in
+		// AccentDim on the cursor line.
+		ruleX := gx + 1 + nw
+		if active {
+			ctx.Screen.Set(ruleX, sy, cell.Cell{Rune: theme.Glyph.TickHeavy, Style: roles.RuleActive, Width: 1})
+		} else {
+			ctx.Screen.Set(ruleX, sy, cell.Cell{Rune: theme.Glyph.TickLight, Style: roles.Rule, Width: 1})
+		}
+
+		// Two blank columns after the rule (already painted by wash or gutter bg).
+
 		if lineNo >= lineCount {
-			fillCells(ctx, gx, right, sy, ' ', cell.Plain)
+			// Past EOF: MiddleDot (·) in FgFaint at text origin.
+			ctx.Screen.Set(textX, sy, cell.Cell{Rune: theme.Glyph.MiddleDot, Style: roles.EOF, Width: 1})
 			continue
 		}
 		row := &v.rows[lineNo]
@@ -84,14 +138,13 @@ func (v *View) Draw(ctx *widget.DrawCtx) {
 		if !row.lexed || row.line != line || row.in != states[lineNo] {
 			v.lexRow(line, states[lineNo], row)
 		}
-		drawGutter(ctx, gx, gw, sy, lineNo)
-		if v.focused && !selOK && cur.Line == lineNo {
-			fillCells(ctx, textX, right, sy, ' ', lineBgStyle)
+		if active {
+			// Text area wash already painted by the full-row fill above.
 		}
 		segs := buildSegs(row, textX, right, v.tabWidth)
 		paintSegs(ctx, sy, segs)
 		if selOK {
-			drawSelection(ctx, sy, segs, row, lineNo, sel0, sel1)
+			drawSelection(ctx, sy, segs, row, lineNo, sel0, sel1, roles)
 		}
 	}
 	v.lastRect = ctx.Rect
@@ -158,14 +211,23 @@ func digitCount(n int) int {
 	return d
 }
 
-func drawGutter(ctx *widget.DrawCtx, gx, gw, sy, lineNo int) {
-	fillCells(ctx, gx, gx+gw, sy, ' ', gutterStyle)
-	max := gw - 1
-	label := fmt.Sprintf("%d", lineNo+1)
-	if len(label) > max {
-		label = label[len(label)-max:]
+// drawGutterNumber right-aligns the line's number in the nw-wide field. Past
+// the end of the document there is no line, so it draws nothing at all: a
+// number there would claim a line that does not exist, and the count would
+// keep climbing as the user scrolls into empty space.
+func drawGutterNumber(ctx *widget.DrawCtx, numX, nw, sy, lineNo, lineCount int, active bool, roles theme.Roles) {
+	if lineNo >= lineCount {
+		return
 	}
-	ctx.Screen.Print(gx+(max-len(label)), sy, gx+max, label, gutterStyle)
+	label := fmt.Sprintf("%d", lineNo+1)
+	if len(label) > nw {
+		label = label[len(label)-nw:]
+	}
+	st := roles.GutterNum
+	if active {
+		st = roles.GutterCur
+	}
+	ctx.Screen.Print(numX+(nw-len(label)), sy, numX+nw, label, st)
 }
 
 func fillCells(ctx *widget.DrawCtx, x0, x1, y int, r rune, st cell.Style) {
@@ -260,21 +322,23 @@ func lineSelRange(lineNo, nrunes int, sel0, sel1 document.Pos) (from, to int) {
 	return from, to
 }
 
-// drawSelection inverts the style of every cell whose rune index on this
-// line falls inside the ordered selection endpoints.
-func drawSelection(ctx *widget.DrawCtx, sy int, segs []seg, row *lexRow, lineNo int, sel0, sel1 document.Pos) {
+// drawSelection paints the selection background (theme.Current.Selection)
+// over the syntax foreground, preserving token colours. It does NOT use
+// reverse video.
+func drawSelection(ctx *widget.DrawCtx, sy int, segs []seg, row *lexRow, lineNo int, sel0, sel1 document.Pos, roles theme.Roles) {
 	from, to := lineSelRange(lineNo, row.nrunes, sel0, sel1)
 	if from >= to {
 		return
 	}
 	scr := ctx.Screen
+	selStyle := roles.Surface
+	selStyle.Bg = theme.Current.Selection
 	for _, s := range segs {
 		if s.ri < from || s.ri >= to {
 			continue
 		}
-		st := s.style.Reverse(true)
 		for i := 0; i < s.w; i++ {
-			c := cell.Cell{Style: st, Width: 1}
+			c := cell.Cell{Style: selStyle, Width: 1}
 			switch {
 			case s.r == '\t':
 				c.Rune = ' '

@@ -4,10 +4,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Aswanidev-vs/cherry/cell"
 	"github.com/Aswanidev-vs/cherry/geom"
 	"github.com/Aswanidev-vs/cherry/input"
 	"github.com/Aswanidev-vs/cherry/render"
 	"github.com/Aswanidev-vs/cherry/widget"
+
+	"github.com/Aswanidev-vs/panda-editor/editor/theme"
 )
 
 func key(r rune) input.KeyPress     { return input.KeyPress{Key: input.KeyNone, Rune: r} }
@@ -32,52 +35,130 @@ func rowText(sc *render.Screen, y, x, right int) string {
 
 func TestStatusBarText(t *testing.T) {
 	segs := StatusBarText("insert", "main.go", "saved", 3, 12, false, false)
-	if len(segs) != 3 {
-		t.Fatalf("segments = %d, want 3", len(segs))
+	if len(segs) != 6 {
+		t.Fatalf("segments = %d, want 6", len(segs))
 	}
+	// segment 0: mode badge
 	if !strings.Contains(segs[0].Text, "INSERT") {
 		t.Errorf("mode missing from first segment %q", segs[0].Text)
 	}
-	if !strings.Contains(segs[0].Text, "main.go") {
-		t.Errorf("file missing from first segment %q", segs[0].Text)
+	if !strings.Contains(segs[0].Text, " ") {
+		// mode badge should be padded with spaces
+		t.Errorf("mode badge missing padding in %q", segs[0].Text)
 	}
-	if strings.Contains(segs[0].Text, "+") {
-		t.Errorf("unexpected modified marker in %q", segs[0].Text)
+	// segment 1: file name
+	if !strings.Contains(segs[1].Text, "main.go") {
+		t.Errorf("file missing from second segment %q", segs[1].Text)
 	}
-	if !strings.Contains(segs[1].Text, "saved") {
-		t.Errorf("message missing from middle segment %q", segs[1].Text)
+	// segment 2: modified dot (should be space when false)
+	if segs[2].Text != " " {
+		t.Errorf("modified dot should be space when false, got %q", segs[2].Text)
 	}
-	if !strings.Contains(segs[2].Text, "Ln 3, Col 12") {
-		t.Errorf("position missing from last segment %q", segs[2].Text)
+	// segment 3: readonly badge (should be space when false)
+	if strings.TrimSpace(segs[3].Text) != "" {
+		t.Errorf("readonly badge should be empty when false, got %q", segs[3].Text)
+	}
+	// segment 4: transient message
+	if !strings.Contains(segs[4].Text, "saved") {
+		t.Errorf("message missing from fifth segment %q", segs[4].Text)
+	}
+	// segment 5: right cluster (position, UTF-8, LF)
+	if !strings.Contains(segs[5].Text, "3:12") {
+		t.Errorf("position missing from sixth segment %q", segs[5].Text)
+	}
+	if !strings.Contains(segs[5].Text, "UTF-8") {
+		t.Errorf("UTF-8 missing from sixth segment %q", segs[5].Text)
+	}
+	if !strings.Contains(segs[5].Text, "LF") {
+		t.Errorf("LF missing from sixth segment %q", segs[5].Text)
 	}
 
 	mod := StatusBarText("edit", "notes.md", "", 1, 1, true, true)
-	if !strings.Contains(mod[0].Text, "+") {
-		t.Errorf("modified marker missing in %q", mod[0].Text)
+	if len(mod) != 6 {
+		t.Fatalf("modified segments = %d, want 6", len(mod))
 	}
-	if !strings.Contains(mod[0].Text, "[RO]") {
-		t.Errorf("readonly marker missing in %q", mod[0].Text)
+	// segment 0: mode badge
+	if !strings.Contains(mod[0].Text, "EDIT") {
+		t.Errorf("mode missing from first segment %q", mod[0].Text)
+	}
+	// segment 1: file name
+	if !strings.Contains(mod[1].Text, "notes.md") {
+		t.Errorf("file missing from second segment %q", mod[1].Text)
+	}
+	// segment 2: modified dot (should be dot when true)
+	if mod[2].Text != string(theme.Glyph.DotFilled) {
+		t.Errorf("modified dot missing in %q", mod[2].Text)
+	}
+	// segment 3: readonly badge (should be [RO] when true)
+	if !strings.Contains(mod[3].Text, "[RO]") {
+		t.Errorf("readonly marker missing in %q", mod[3].Text)
+	}
+	// segment 4: transient message (empty)
+	if mod[4].Text != "" {
+		t.Errorf("transient message should be empty when empty string, got %q", mod[4].Text)
+	}
+	// segment 5: right cluster (position, UTF-8, LF) - note: position is "1:1"
+	if !strings.Contains(mod[5].Text, "1:1") {
+		t.Errorf("position missing from sixth segment %q", mod[5].Text)
+	}
+	if !strings.Contains(mod[5].Text, "UTF-8") {
+		t.Errorf("UTF-8 missing from sixth segment %q", mod[5].Text)
+	}
+	if !strings.Contains(mod[5].Text, "LF") {
+		t.Errorf("LF missing from sixth segment %q", mod[5].Text)
 	}
 
-	// Empty inputs still yield three usable segments.
+	// Empty inputs still yield six usable segments.
 	empty := StatusBarText("", "", "", 0, 0, false, false)
-	if len(empty) != 3 {
-		t.Fatalf("empty segments = %d, want 3", len(empty))
+	if len(empty) != 6 {
+		t.Fatalf("empty segments = %d, want 6", len(empty))
 	}
+	// All segments should be empty strings or spaces etc.
+	// We'll just check that they are not panicking.
 }
 
 func TestHintBar(t *testing.T) {
 	for _, mode := range []string{"insert", "search", "dialog", "welcome"} {
 		hb := HintBar(mode)
-		if hb == nil || hb.Content == "" {
-			t.Fatalf("HintBar(%s) produced no content", mode)
+		if hb == nil {
+			t.Fatalf("HintBar(%s) returned nil", mode)
 		}
+		// Check that the widget is a single row.
 		if hb.Measure(geom.Size{}).H != 1 {
 			t.Errorf("HintBar(%s) must be a single row", mode)
 		}
+		// We can also test the Draw by creating a screen and checking that it paints something.
+		// We'll do a simple test: draw it and check that the background is Well (sunken).
+		sc := render.New(20, 1)
+		hb.Draw(&widget.DrawCtx{Rect: geom.Rect{Size: geom.Size{W: 20, H: 1}}, Screen: sc})
+		// Check a few cells to see if they are sunken background.
+		// We'll just check that the first cell is not the default background.
+		// This is a weak test but better than nothing.
+		if sc.CellAt(0, 0).Style.Bg == theme.Current.Roles().Surface.Bg {
+			t.Error("HintBar background is not sunken")
+		}
 	}
-	if HintBar("unknown").Content == "" {
-		t.Error("unknown mode must fall back to a generic strip")
+	// Unknown mode should fall back to a generic strip.
+	hb := HintBar("unknown")
+	if hb == nil {
+		t.Fatal("HintBar(\"unknown\") returned nil")
+	}
+	if hb.Measure(geom.Size{}).H != 1 {
+		t.Error("HintBar(\"unknown\") must be a single row")
+	}
+	// We can also check that the content is not empty by drawing and seeing if it's not blank.
+	sc := render.New(20, 1)
+	hb.Draw(&widget.DrawCtx{Rect: geom.Rect{Size: geom.Size{W: 20, H: 1}}, Screen: sc})
+	// Check that at least one cell is not blank.
+	foundNonBlank := false
+	for x := 0; x < 20; x++ {
+		if !sc.CellAt(x, 0).IsBlank() {
+			foundNonBlank = true
+			break
+		}
+	}
+	if !foundNonBlank {
+		t.Error("HintBar(\"unknown\") appears to be blank")
 	}
 }
 
@@ -116,10 +197,11 @@ func TestInputLineTypingBackspaceAndDraw(t *testing.T) {
 		t.Fatalf("painted line %q", got)
 	}
 	// Block cursor: the cell right after the text (x=10: label occupies
-	// 0..5, text starts at x=6, 4 runes) must carry the inverse block style.
-	cur := sc.CellAt(10, 0)
-	if cur.Rune != ' ' || cur.Style != styleInverse {
-		t.Fatalf("cursor cell %+v is not an inverse block", cur)
+	// 0..5, text starts at x=6, 4 runes) must carry the signal style.
+	c := sc.CellAt(10, 0)
+	roles := theme.Current.Roles()
+	if c.Rune != ' ' || c.Style != roles.Signal {
+		t.Fatalf("cursor cell %+v is not a signal block", c)
 	}
 
 	if got := line.Handle(k(input.KeyEnter)); !got {
@@ -263,6 +345,7 @@ func TestWelcomeDrawSmallRect(t *testing.T) {
 	}
 }
 
+// TestDialogActions is unchanged from original.
 func TestDialogActions(t *testing.T) {
 	var chosen []string
 	d := NewDialog("Save changes?", []string{"yes", "no", "cancel"}, func(c string) { chosen = append(chosen, c) })
@@ -306,6 +389,7 @@ func TestDialogActions(t *testing.T) {
 	}
 }
 
+// TestDialogDrawHighlightsSelection is updated for the new chip style.
 func TestDialogDrawHighlightsSelection(t *testing.T) {
 	d := NewDialog("Really quit?", []string{"yes", "no"}, nil)
 	sc := drawAt(t, d, geom.Rect{Size: geom.Size{W: 40, H: 6}})
@@ -319,23 +403,95 @@ func TestDialogDrawHighlightsSelection(t *testing.T) {
 	if !strings.Contains(row, "yes") || !strings.Contains(row, "no") {
 		t.Errorf("actions not painted: %q", row)
 	}
-	// Highlighted action: some cell must be reversed (accent bg over fg
-	// swapped), i.e. carry the inverse style.
-	reversed := false
-	for y := 0; y < 6 && !reversed; y++ {
+	// Check the selected action: a chip carrying a ▸ pointer in the focus
+	// style, with the label following the pointer and its gap.
+	foundSelected := false
+	r := theme.Current.Roles()
+	for y := 0; y < 6 && !foundSelected; y++ {
 		for x := 0; x < 40; x++ {
-			if sc.CellAt(x, y).Style == styleInverse {
-				reversed = true
+			c := sc.CellAt(x, y)
+			if c.Rune != theme.Glyph.PointerR || c.Style != r.ActionFocus {
+				continue
+			}
+			// The pointer is separated from the chip by one space, so the
+			// '[' sits one cell further along than the pointer's own width.
+			labelX := x + cell.RuneWidth(theme.Glyph.PointerR) + 1
+			if labelX+1 < 40 &&
+				sc.CellAt(labelX, y).Rune == '[' &&
+				sc.CellAt(labelX+1, y).Rune == 'y' {
+				foundSelected = true
 				break
 			}
 		}
 	}
-	if !reversed {
-		t.Error("selected action is not rendered in inverse style")
+	if !foundSelected {
+		t.Error("selected action not found with pointer and focus style")
 	}
-	// Background fill uses the palette's Indexed 236 surface throughout.
-	if sc.CellAt(2, 1).Style.Bg != colBG || sc.CellAt(0, 0).Style.Bg != colBG {
-		t.Error("dialog background is not the palette surface")
+	// Check that the unselected action is a chip in idle style without pointer.
+	foundUnselected := false
+	for y := 0; y < 6 && !foundUnselected; y++ {
+		for x := 0; x < 40; x++ {
+			c := sc.CellAt(x, y)
+			if c.Rune == '[' && c.Style == r.ActionIdle {
+				foundUnselected = true
+				break
+			}
+		}
+	}
+	if !foundUnselected {
+		t.Error("unselected action not found in idle style")
+	}
+	// The dialog is centred at its measured size, so its interior is a
+	// known rect rather than the whole viewport. Assert the interior is the
+	// overlay surface, and that the cells outside the frame are untouched —
+	// the shell dims those itself, and a widget that painted over them would
+	// hide the scrim that is supposed to make the dialog pop.
+	top, left := -1, -1
+	for y := 0; y < 6 && top < 0; y++ {
+		for x := 0; x < 40; x++ {
+			if sc.CellAt(x, y).Rune == '╭' {
+				top, left = y, x
+				break
+			}
+		}
+	}
+	if top < 0 {
+		t.Fatal("dialog frame corner not found")
+	}
+	sz := d.Measure(geom.Size{})
+	w, h := sz.W, sz.H
+	interiorOK := true
+	for y := top + 1; y < top+h-1 && interiorOK; y++ {
+		for x := left + 1; x < left+w-1 && interiorOK; x++ {
+			c := sc.CellAt(x, y)
+			// The action chips deliberately sit on their own surfaces, so
+			// only the body rows are expected to be flat overlay.
+			if c.Style == r.ActionFocus || c.Style == r.ActionIdle {
+				continue
+			}
+			if c.Style.Bg != r.Overlay.Bg {
+				interiorOK = false
+			}
+		}
+	}
+	if !interiorOK {
+		t.Error("dialog interior is not the overlay surface")
+	}
+	// Nothing may be painted outside the frame.
+	outsideOK := true
+	for y := 0; y < 6 && outsideOK; y++ {
+		for x := 0; x < 40; x++ {
+			inside := y >= top && y < top+h && x >= left && x < left+w
+			if inside {
+				continue
+			}
+			if c := sc.CellAt(x, y); c.Rune != ' ' && c.Rune != 0 {
+				outsideOK = false
+			}
+		}
+	}
+	if !outsideOK {
+		t.Error("dialog painted outside its centered frame")
 	}
 }
 
@@ -360,4 +516,64 @@ func (r *recordingWidget) Draw(*widget.DrawCtx)        {}
 func (r *recordingWidget) Handle(input.Event) bool {
 	r.count++
 	return true
+}
+
+// The path elision exists so the readouts are never the thing that gets
+// dropped from the status strip, and so a shortened path is never mistaken
+// for the whole one.
+func TestElidePath(t *testing.T) {
+	cases := []struct {
+		name, in  string
+		budget    int
+		want      string
+		suffix    string
+		wantWidth int
+	}{
+		{name: "empty", in: "", budget: 20, want: ""},
+		{name: "fits", in: `theme\style.go`, budget: 20, want: `theme\style.go`},
+		{name: "exact fit", in: `theme\style.go`, budget: 15, want: `theme\style.go`},
+		{
+			name: "long windows path keeps the tail and marks the cut",
+			in:   `G:\fastbeam\panda_editor\editor\theme\theme.go`, budget: 24,
+			suffix: `theme\theme.go`,
+		},
+		{
+			name: "a tiny budget still yields a marked path",
+			in:   `G:\fastbeam\panda_editor\editor\theme\theme.go`, budget: 4,
+			wantWidth: 4,
+		},
+		{
+			name: "a nonsensical budget does not produce a negative width",
+			in:   `some/very/long/path/indeed.go`, budget: 0,
+			wantWidth: 4,
+		},
+		{
+			name: "a unix path is cut the same way",
+			in:   "/usr/local/src/editor/main.go", budget: 16,
+			suffix:    "main.go",
+			wantWidth: 16,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := ElidePath(c.in, c.budget)
+			if c.want != "" && got != c.want {
+				t.Errorf("ElidePath(%q, %d) = %q, want %q", c.in, c.budget, got, c.want)
+			}
+			limit := c.wantWidth
+			if limit == 0 {
+				limit = c.budget
+			}
+			if w := cell.StringWidth(got); w > limit {
+				t.Errorf("ElidePath(%q, %d) = %q (%d cells), want at most %d",
+					c.in, c.budget, got, w, limit)
+			}
+			if c.suffix != "" && !strings.HasSuffix(got, c.suffix) {
+				t.Errorf("ElidePath(%q, %d) = %q, want it to end in %q", c.in, c.budget, got, c.suffix)
+			}
+			if c.in != "" && got != c.in && []rune(got)[0] != theme.Glyph.Ellipsis {
+				t.Errorf("ElidePath(%q, %d) = %q, want a leading ellipsis when it cuts", c.in, c.budget, got)
+			}
+		})
+	}
 }

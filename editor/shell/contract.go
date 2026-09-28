@@ -5,6 +5,7 @@
 package shell
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -19,8 +20,9 @@ import (
 	"github.com/Aswanidev-vs/panda-editor/editor/document"
 	"github.com/Aswanidev-vs/panda-editor/editor/editorview"
 	"github.com/Aswanidev-vs/panda-editor/editor/search"
-	"github.com/Aswanidev-vs/panda-editor/editor/views"
+	"github.com/Aswanidev-vs/panda-editor/editor/theme"
 	"github.com/Aswanidev-vs/panda-editor/editor/vimmode"
+	"github.com/Aswanidev-vs/panda-editor/editor/views"
 	"github.com/Aswanidev-vs/panda-editor/editor/workspace"
 )
 
@@ -38,11 +40,11 @@ type Options struct {
 type overlayKind int
 
 const (
-	ovNone overlayKind = iota
-	ovInput             // bottom InputLine prompt (open/save-as/goto/search/ex)
-	ovDialog            // centered confirm dialog
-	ovHelp              // centered help popup
-	ovWelcome           // centered welcome splash
+	ovNone    overlayKind = iota
+	ovInput               // bottom InputLine prompt (open/save-as/goto/search/ex)
+	ovDialog              // centered confirm dialog
+	ovHelp                // centered help popup
+	ovWelcome             // centered welcome splash
 )
 
 // Shell is the internal app coordinator implementing widget.Widget and
@@ -383,9 +385,10 @@ func (s *Shell) onExCancel() { s.ov = ovNone }
 
 func (s *Shell) openHelp() {
 	s.ov = ovHelp
+	r := theme.Current.Roles()
 	s.help = views.NewPopup("Help", &widget.Text{
 		Content: helpText,
-		Style:   cell.Style{}.Foreground(cell.Indexed(252)).Background(cell.Indexed(236)),
+		Style:   r.Surface,
 	})
 }
 
@@ -475,14 +478,14 @@ func (s *Shell) saveDocAs(doc *document.Document, path string) {
 
 func (s *Shell) quitFlow() {
 	doc := s.ws.ActiveDoc()
-	if doc != nil && doc.Modified() {
-		s.ov = ovDialog
-		s.mode = "dialog"
-		s.dialog = views.NewDialog("Save changes? (y/n/esc)",
-			[]string{"yes", "no"}, s.onQuitDialog)
+	if doc == nil || !doc.Modified() {
+		s.app.Quit()
 		return
 	}
-	s.app.Quit()
+	s.ov = ovDialog
+	s.mode = "dialog"
+	s.dialog = views.NewDialog("Save changes? (y/n/esc)",
+		[]string{"yes", "no"}, s.onQuitDialog)
 }
 
 func (s *Shell) onQuitDialog(choice string) {
@@ -513,10 +516,10 @@ func (s *Shell) ensureVisible(doc *document.Document) {
 // paints any active overlay on top.
 func (s *Shell) Draw(ctx *widget.DrawCtx) {
 	rects := layout.Solve(ctx.Rect.Size, layout.Vertical, []layout.Spec{
-		{Fixed: 1},  // tab bar
+		{Fixed: 1},   // tab bar
 		{Fill: true}, // editor
-		{Fixed: 1},  // hint bar
-		{Fixed: 1},  // status bar
+		{Fixed: 1},   // hint bar
+		{Fixed: 1},   // status bar
 	})
 	s.lastH = rects[1].Size.H
 
@@ -529,6 +532,17 @@ func (s *Shell) Draw(ctx *widget.DrawCtx) {
 		s.input.Draw(&widget.DrawCtx{Rect: rects[3], Screen: ctx.Screen})
 	default:
 		s.drawStatusBar(ctx, rects[3])
+	}
+
+	// A modal has to interrupt, not merely cover. Re-blending the whole
+	// viewport toward the sunken surface pushes the editor back and leaves
+	// the overlay as the only lit thing on screen. It runs here, after the
+	// editor and chrome are painted and before the overlay is drawn, so the
+	// overlay lands on top of the dimmed frame rather than being dimmed
+	// itself.
+	switch s.ov {
+	case ovDialog, ovHelp, ovWelcome:
+		theme.Scrim(ctx.Rect, ctx.Screen)
 	}
 
 	switch s.ov {
@@ -551,17 +565,80 @@ func (s *Shell) drawTabBar(ctx *widget.DrawCtx, r geom.Rect) {
 	if r.Empty() {
 		return
 	}
-	ctx.Screen.Fill(r, styledBlank(shTabBG))
-	x := r.Pos.X
-	for i := 0; i < s.ws.Count(); i++ {
-		label := s.ws.TabLabel(i)
-		st := shTab
-		if i == s.ws.Active() {
-			st = shTabActive
-		}
-		x = ctx.Screen.Print(x, r.Pos.Y, r.Right(), " "+label, st)
-		x = ctx.Screen.Print(x, r.Pos.Y, r.Right(), " ", shTabBG)
+	// Sunken background.
+	roles := theme.Current.Roles()
+	ctx.Screen.Fill(r, styledBlank(roles.Well))
+	// Compute visible tabs: drop leftmost tabs if needed to fit, show ‹ marker.
+	tabCount := s.ws.Count()
+	if tabCount == 0 {
+		return
 	}
+	// Measure each tab: " label " plus a separator space after.
+	// We'll compute the total width needed.
+	var widths []int
+	var totalWidth int
+	for i := 0; i < tabCount; i++ {
+		label := s.ws.TabLabel(i)
+		w := strW(label) + 2 // " label "
+		widths = append(widths, w)
+		totalWidth += w + 1 // plus separator space after
+	}
+	// If total width exceeds rect width, drop leftmost tabs.
+	var startIdx int
+	if totalWidth > r.Size.W {
+		// Drop tabs from the left until we fit.
+		var widthSoFar int
+		for startIdx = 0; startIdx < tabCount; startIdx++ {
+			widthSoFar += widths[startIdx] + 1 // include separator
+			if widthSoFar > r.Size.W {
+				break
+			}
+		}
+		// If we dropped any tabs, show ‹ marker.
+		if startIdx > 0 {
+			// Draw the ‹ marker in rule colour.
+			ctx.Screen.Print(r.Pos.X, r.Pos.Y, r.Right(), string(theme.Glyph.Ellipsis), roles.ChromeLabel)
+			// Move x past the marker and a space.
+			x := r.Pos.X + strW(string(theme.Glyph.Ellipsis)) + 1
+			// Draw tabs from startIdx.
+			x = s.drawTabsFrom(ctx, r, x, startIdx)
+			return
+		}
+	}
+	// No overflow, draw all tabs.
+	s.drawTabsFrom(ctx, r, r.Pos.X, 0)
+}
+
+// drawTabsFrom draws tabs starting at index i, starting at x, and returns the x after the last tab.
+func (s *Shell) drawTabsFrom(ctx *widget.DrawCtx, r geom.Rect, x int, startIdx int) int {
+	tabCount := s.ws.Count()
+	roles := theme.Current.Roles()
+	for i := startIdx; i < tabCount; i++ {
+		label := s.ws.TabLabel(i)
+		// Determine if this tab is active.
+		active := i == s.ws.Active()
+		var st cell.Style
+		if active {
+			// Active tab: label in accent bold on raised surface, preceded by ▌ tick in accent.
+			// Draw the ▌ tick.
+			ctx.Screen.Print(x, r.Pos.Y, r.Right(), string(theme.Glyph.BlockLeft), roles.Signal)
+			x += cell.RuneWidth(theme.Glyph.BlockLeft)
+			// Draw the label: " label " in accent bold on raised.
+			st = roles.Badge
+		} else {
+			// Inactive tab: label in faint ink.
+			st = roles.ChromeLabel
+		}
+		// Draw the label: " label ".
+		ctx.Screen.Print(x, r.Pos.Y, r.Right(), " "+label+" ", st)
+		x += strW(label) + 2
+		// Separator: · in rule colour, unless this is the last tab.
+		if i < tabCount-1 {
+			ctx.Screen.Print(x, r.Pos.Y, r.Right(), string(theme.Glyph.MiddleDot), roles.Hairline)
+			x += 1
+		}
+	}
+	return x
 }
 
 func (s *Shell) drawHintBar(ctx *widget.DrawCtx, r geom.Rect) {
@@ -593,9 +670,32 @@ func (s *Shell) drawStatusBar(ctx *widget.DrawCtx, r geom.Rect) {
 		c := doc.Cursor()
 		ln, col = c.Line+1, c.Col+1
 	}
-	segs := views.StatusBarText(mode, file, s.msg, ln, col, mod, ro)
+	// The strip lays segments out in order, so an un-shortened path claims
+	// the row and pushes the readouts off the right edge. Budget the path
+	// against whatever the other segments need and let the message — the
+	// only flexible one — absorb the remainder.
+	segs := views.StatusBarText(mode, views.ElidePath(file, s.fileBudget(r, mod, ro, ln, col)), s.msg, ln, col, mod, ro)
 	sb := widget.NewStatusBar(segs...)
 	sb.Draw(&widget.DrawCtx{Rect: r, Screen: ctx.Screen})
+}
+
+// fileBudget reports how many columns the file segment may take: the row
+// width minus what the mode badge, the modified and read-only markers, the
+// readouts and the one-cell paddings between them need, plus a little slack.
+// It is deliberately pessimistic about the message, because the message is
+// the segment designed to be squeezed.
+func (s *Shell) fileBudget(r geom.Rect, mod, ro bool, ln, col int) int {
+	fixed := 3 + 2 // " MODE " badge and its padding
+	fixed += 1     // modified dot
+	fixed += 2     // read-only marker padding
+	fixed += 2     // file segment padding
+	fixed += 1     // gap before the readouts
+	pos := cell.StringWidth(fmt.Sprintf("%d:%d", ln, col))
+	fixed += pos + len("  UTF-8  LF") + 2
+	if ro {
+		fixed += 3
+	}
+	return r.Size.W - fixed - 1
 }
 
 func (s *Shell) hintMode() string {
@@ -622,11 +722,13 @@ func (s *Shell) CursorPos() (geom.Point, bool) {
 // Palette
 // ---------------------------------------------------------------------------
 
-var (
-	shTabBG    = cell.Style{}.Foreground(cell.Indexed(240)).Background(cell.Indexed(236))
-	shTab      = cell.Style{}.Foreground(cell.Indexed(252)).Background(cell.Indexed(236))
-	shTabActive = cell.Style{}.Foreground(cell.Indexed(236)).Background(cell.Indexed(75)).Bold(true)
-)
+func strW(s string) int {
+	w := 0
+	for _, r := range s {
+		w += cell.RuneWidth(r)
+	}
+	return w
+}
 
 func styledBlank(st cell.Style) cell.Cell { return cell.Cell{Rune: ' ', Style: st, Width: 1} }
 

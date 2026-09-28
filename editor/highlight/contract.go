@@ -1,9 +1,8 @@
 // Package highlight turns one source line into styled spans, threading
 // block-comment state across consecutive lines. It is backed by a chroma
 // regex lexer matched by file extension and maps chroma token kinds onto
-// cell styles from a built-in dark palette (indexed colours only). Nothing
-// here knows about the viewport; the view caches chains of (line hash, state
-// in) itself.
+// cell styles from the editor's truecolour theme. Nothing here knows about
+// the viewport; the view caches chains of (line hash, state in) itself.
 package highlight
 
 import (
@@ -15,6 +14,8 @@ import (
 	"github.com/alecthomas/chroma/lexers"
 
 	"github.com/Aswanidev-vs/cherry/cell"
+
+	"github.com/Aswanidev-vs/panda-editor/editor/theme"
 )
 
 // State threads block-context between consecutive Style calls.
@@ -32,19 +33,48 @@ type Span struct {
 	Style cell.Style
 }
 
-// Palette: one cell.Style per chroma token family, drawn from the indexed
-// 256-colour palette only (no RGB) so it degrades gracefully on 16-colour
-// terminals.
-var (
-	styleKeyword = cell.Plain.Foreground(cell.Indexed(75)).Bold(true)    // Keywords
-	styleString  = cell.Plain.Foreground(cell.Indexed(114))              // Strings, Chars
-	styleComment = cell.Plain.Foreground(cell.Indexed(245)).Italic(true) // Comments, docstrings
-	styleNumber  = cell.Plain.Foreground(cell.Indexed(173))              // Numbers
-	stylePunct   = cell.Plain.Foreground(cell.Indexed(251))              // Operators, Punctuation
-	styleName    = cell.Plain.Foreground(cell.Indexed(252))              // Name tokens
-	stylePreproc = cell.Plain.Foreground(cell.Indexed(180))              // Preprocessor fields
-	styleOther   = cell.Plain.Foreground(cell.Indexed(252)).Italic(true) // Everything else
-)
+// styles holds one cell.Style per chroma token family, drawn from the
+// editor's truecolour theme. Cherry downgrades to fewer colours on constrained
+// terminals, so exact shades are always safe to request.
+//
+// The set is built per call rather than captured in package-level vars: the
+// theme is swappable, and a var initialised from theme.Current at init time
+// would freeze whichever palette happened to be current and silently ignore
+// every later switch.
+type styles struct {
+	keyword  cell.Style
+	str      cell.Style
+	comment  cell.Style
+	number   cell.Style
+	operator cell.Style
+	punct    cell.Style
+	name     cell.Style
+	function cell.Style
+	typ      cell.Style
+	preproc  cell.Style
+	other    cell.Style
+}
+
+func currentStyles() styles {
+	p := theme.Current
+	return styles{
+		keyword:  theme.Style(p.Keyword, p.Base, cell.AttrBold),
+		str:      theme.Style(p.String, p.Base),
+		comment:  theme.Style(p.Comment, p.Base, cell.AttrItalic),
+		number:   theme.Style(p.Number, p.Base),
+		operator: theme.Style(p.Operator, p.Base),
+		// Punctuation recedes below ordinary text rather than competing with
+		// it, so it gets its own dimmer shade instead of plain foreground.
+		punct:   theme.Style(p.Punct, p.Base),
+		name:    theme.Style(p.Fg, p.Base),
+		function: theme.Style(p.Function, p.Base),
+		typ:      theme.Style(p.Type, p.Base),
+		// Preprocessor fields read as declarations, so they take the type
+		// shade rather than the comment shade they are lexed alongside.
+		preproc: theme.Style(p.Type, p.Base),
+		other:   theme.Style(p.Fg, p.Base),
+	}
+}
 
 // extensions maps supported file extensions (lower case) to chroma lexer
 // aliases; Go, Python, JavaScript/TypeScript, JSON, YAML/Markdown, C/C++,
@@ -173,6 +203,7 @@ func (l *Lexer) Style(line string, in State) (spans []Span, out State) {
 		// Plaintext: the whole line as one default-styled span.
 		return []Span{{Text: line, Style: cell.Plain}}, in
 	}
+	st := currentStyles()
 	out = in
 
 	// chroma can panic on degenerate input (delegate lexers, rule bugs); an
@@ -192,14 +223,14 @@ func (l *Lexer) Style(line string, in State) (spans []Span, out State) {
 		// line remains a comment and the state carries over.
 		if i := strings.Index(line, l.terminator); i >= 0 {
 			end := i + len(l.terminator)
-			spans = appendSpan(nil, line[:end], styleComment)
+			spans = appendSpan(nil, line[:end], st.comment)
 			line = line[end:]
 			if line == "" {
 				return spans, StateNormal
 			}
 			out = StateNormal
 		} else {
-			return []Span{{Text: line, Style: styleComment}}, StateComment
+			return []Span{{Text: line, Style: st.comment}}, StateComment
 		}
 	}
 
@@ -225,33 +256,40 @@ func (l *Lexer) Style(line string, in State) (spans []Span, out State) {
 				out = StateComment
 			}
 		}
-		spans = appendSpan(spans, v, styleFor(tok.Type, comment))
+		spans = appendSpan(spans, v, styleFor(tok.Type, comment, st))
 	}
 	return spans, out
 }
 
 // styleFor maps a chroma token type onto the palette by token family band
 // (chroma lays token types out in 100-wide bands per family).
-func styleFor(t chroma.TokenType, comment bool) cell.Style {
+func styleFor(t chroma.TokenType, comment bool, st styles) cell.Style {
 	switch {
 	case t == chroma.LiteralStringDoc: // docstrings read as comments
-		return styleComment
+		return st.comment
 	case t >= chroma.Keyword && t <= chroma.KeywordType:
-		return styleKeyword
+		return st.keyword
 	case t >= chroma.LiteralString && t <= chroma.LiteralStringSymbol:
-		return styleString
+		return st.str
 	case t >= chroma.LiteralNumber && t <= chroma.LiteralNumberOct:
-		return styleNumber
+		return st.number
 	case t >= chroma.Comment && t <= chroma.CommentSpecial:
-		return styleComment
+		return st.comment
 	case t == chroma.CommentPreproc || t == chroma.CommentPreprocFile:
-		return stylePreproc
-	case t == chroma.Operator || t == chroma.OperatorWord || t == chroma.Punctuation:
-		return stylePunct
+		return st.preproc
+	case t == chroma.Operator || t == chroma.OperatorWord:
+		return st.operator
+	case t == chroma.Punctuation:
+		return st.punct
+	case t == chroma.NameFunction || t == chroma.NameFunctionMagic:
+		return st.function
+	case t == chroma.NameClass || t == chroma.NameConstant ||
+		t == chroma.NameDecorator || t == chroma.NameBuiltin || t == chroma.NameBuiltinPseudo:
+		return st.typ
 	case t >= chroma.Name && t <= chroma.NameVariableMagic:
-		return styleName
+		return st.name
 	default: // Text/Whitespace, Generics, plain Literals, Errors, ...
-		return styleOther
+		return st.other
 	}
 }
 
